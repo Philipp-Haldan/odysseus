@@ -211,6 +211,26 @@ def _friendly_email_auth_error(protocol: str, host: str, error: object) -> str:
             "does not support Microsoft OAuth/Graph mail yet, so Outlook "
             "accounts cannot be added with this password form."
         )
+    google_host = any(
+        marker in host_lower
+        for marker in ("gmail.com", "googlemail.com", "google.com")
+    )
+    google_bad_creds = (
+        google_host
+        and (
+            "5.7.8" in lower
+            or "badcredentials" in lower.replace(" ", "")
+            or "username and password not accepted" in lower
+        )
+    )
+    if google_bad_creds:
+        return (
+            "Gmail rejected the login. Use a Google App Password "
+            "(myaccount.google.com/apppasswords), not your normal "
+            "Google password. 2-Step Verification must be on. "
+            "IMAP Username must be your full @gmail.com address. "
+            "For Google Workspace / .edu, use Connect with Google instead."
+        )
     return raw[:200]
 
 

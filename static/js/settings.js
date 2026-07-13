@@ -4432,7 +4432,7 @@ async function initUnifiedIntegrations() {
           <div class="settings-row"><label class="settings-label">Port${_hint('993 for IMAPS (most providers), 143 for plain or STARTTLS. Local servers often use a custom port like 31143.')}</label><input id="uf-imap-port" class="settings-input" type="number" placeholder="993" style="max-width:100px"></div>
           <div class="settings-row"><label class="settings-label">Username${_hint('Yes — your full email address goes here too (e.g. you@gmail.com). Same as the Email field above for almost every provider.')}</label><input id="uf-imap-user" class="settings-input" placeholder="you@example.com"></div>
           <div class="uf-password-section"><div class="settings-row"><label class="settings-label">Password${_hint('For Gmail, iCloud, and Yahoo: paste your App Password (NOT your normal account password). For Migadu and Fastmail, your mailbox password usually works. Outlook / Office 365 generally requires OAuth and will not work with this password form.')}</label><input id="uf-imap-pass" class="settings-input" type="password" placeholder="${placeholderPass}"></div></div>
-          <div class="settings-row"><label class="settings-label">STARTTLS${_hint('Turn ON for port 143/587 to upgrade plain to TLS. Turn OFF for port 993 (IMAPS — already encrypted) or a local server with no TLS configured.')}</label><label class="admin-switch" style="margin-left:0"><input type="checkbox" id="uf-imap-starttls" checked><span class="admin-slider"></span></label></div>
+          <div class="settings-row"><label class="settings-label">STARTTLS${_hint('Turn ON for port 143/587 to upgrade plain to TLS. Turn OFF for port 993 (IMAPS — already encrypted) or a local server with no TLS configured.')}</label><label class="admin-switch" style="margin-left:0"><input type="checkbox" id="uf-imap-starttls"><span class="admin-slider"></span></label></div>
           <div style="font-size:11px;font-weight:600;opacity:0.6;margin:8px 0 2px;display:flex;align-items:center;gap:5px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent, var(--red));flex-shrink:0;" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>SMTP (Sending) <span style="font-weight:normal;opacity:0.7">— optional, leave blank for read-only</span></div>
           <div class="settings-row"><label class="settings-label">Host${_hint('Your outgoing-mail server, e.g. smtp.gmail.com. Leave blank to make this account read-only.')}</label><input id="uf-smtp-host" class="settings-input" placeholder="smtp.example.com"></div>
           <div class="settings-row"><label class="settings-label">Port${_hint('465 for SSL/SMTPS, 587 for STARTTLS. 25 is usually blocked by ISPs.')}</label><input id="uf-smtp-port" class="settings-input" type="number" placeholder="465" style="max-width:100px"></div>
@@ -4713,13 +4713,16 @@ async function initUnifiedIntegrations() {
     // Collect the current form values + apply the "Same as IMAP" mirror —
     // shared by both Save and Test so they agree on what's being sent.
     const _collectBody = () => {
+      const fromAddr = el('uf-email-from').value.trim();
+      let imapUser = el('uf-imap-user').value.trim();
+      if (!imapUser && fromAddr) imapUser = fromAddr;
       const body = {
         name: el('uf-email-name').value.trim(),
-        from_address: el('uf-email-from').value.trim(),
+        from_address: fromAddr,
         display_name: el('uf-display-name').value.trim(),
         imap_host: el('uf-imap-host').value.trim(),
         imap_port: parseInt(el('uf-imap-port').value) || 993,
-        imap_user: el('uf-imap-user').value.trim(),
+        imap_user: imapUser,
         imap_starttls: el('uf-imap-starttls').checked,
         smtp_host: el('uf-smtp-host').value.trim(),
         smtp_port: parseInt(el('uf-smtp-port').value) || 465,
@@ -4727,12 +4730,13 @@ async function initUnifiedIntegrations() {
         smtp_user: el('uf-smtp-user').value.trim(),
         is_default: el('uf-email-default').checked,
       };
-      if (el('uf-imap-pass').value) body.imap_password = el('uf-imap-pass').value;
-      if (el('uf-smtp-pass').value) body.smtp_password = el('uf-smtp-pass').value;
+      if (el('uf-imap-pass').value) body.imap_password = el('uf-imap-pass').value.replace(/\s/g, '');
+      if (el('uf-smtp-pass').value) body.smtp_password = el('uf-smtp-pass').value.replace(/\s/g, '');
       if (el('uf-smtp-same').checked) {
         body.smtp_user = body.imap_user;
         if (body.imap_password) body.smtp_password = body.imap_password;
       }
+      if (!body.smtp_user && body.imap_user) body.smtp_user = body.imap_user;
       return body;
     };
 
