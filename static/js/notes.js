@@ -19,7 +19,7 @@ let _notes = [];
 let _editingId = null;
 let _selectedIds = new Set();
 let _activeLabel = null;
-let _activeFilter = null; // null | 'default' | 'reminders' | 'no-reminders' | 'today' | 'goals' | 'myday'
+let _activeFilter = null; // null | 'default' | 'reminders' | 'no-reminders' | 'today' | 'goals' | 'myday' | 'myweek'
 // Cycle order for the Reminders chip: each click on it advances reminders →
 // null → no-reminders → null → reminders → ... This var tracks which non-null
 // state the next click should land on after passing through null.
@@ -51,6 +51,8 @@ const NOTES_FIRST_OPEN_HINT_KEY = 'odysseus-notes-first-open-hint-v1';
 const NOTES_FILTER_KEY = 'odysseus-notes-active-filter';
 const NOTES_MYDAY_INTRO_KEY = 'odysseus-notes-myday-v1';
 let _mydayRenderToken = 0;
+let _myweekRenderToken = 0;
+const WEEK_PLAN_LABEL = 'woche';
 
 function _forceCloseNotesPanel() {
   _open = false;
@@ -621,6 +623,7 @@ function _localDateOfIso(dtstart) {
 
 function _isDailyTodoNote(note) {
   if (!note || note.archived || note.note_type === 'goal' || note.note_type === 'draw') return false;
+  if (_isWeekPlanNote(note)) return false;
   if (note.note_type === 'todo' || note.note_type === 'checklist') return true;
   const lbl = (note.label || '').toLowerCase();
   return lbl === 'todo' || lbl.includes('todo');
@@ -669,26 +672,183 @@ function _fmtMyDayTime(dtstart, allDay, dtend) {
   return t0;
 }
 
+async function _fetchEventsForRange(start, end) {
+  try {
+    const res = await fetch(`${API_BASE}/api/calendar/events?start=${start}&end=${end}`, { credentials: 'same-origin' });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.events || []).sort((a, b) => (a.dtstart || '').localeCompare(b.dtstart || ''));
+  } catch {
+    return [];
+  }
+}
+
+function _eventsOnDay(events, dayStr) {
+  return events.filter(ev => {
+    if (ev.all_day) {
+      if (ev.dtstart === ev.dtend) return ev.dtstart === dayStr;
+      return ev.dtstart <= dayStr && ev.dtend > dayStr;
+    }
+    return _localDateOfIso(ev.dtstart) === dayStr;
+  });
+}
+
 async function _fetchTodayEvents() {
   const today = _myDayTodayStr();
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
-  const end = _dateStr(tomorrow);
-  try {
-    const res = await fetch(`${API_BASE}/api/calendar/events?start=${today}&end=${end}`, { credentials: 'same-origin' });
-    if (!res.ok) return [];
-    const data = await res.json();
-    const events = data.events || [];
-    return events.filter(ev => {
-      if (ev.all_day) {
-        if (ev.dtstart === ev.dtend) return ev.dtstart === today;
-        return ev.dtstart <= today && ev.dtend > today;
-      }
-      return _localDateOfIso(ev.dtstart) === today;
-    }).sort((a, b) => (a.dtstart || '').localeCompare(b.dtstart || ''));
-  } catch {
-    return [];
+  const events = await _fetchEventsForRange(today, _dateStr(tomorrow));
+  return _eventsOnDay(events, today);
+}
+
+function _mondayOfWeek(d = new Date()) {
+  const copy = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const dow = (copy.getDay() + 6) % 7;
+  copy.setDate(copy.getDate() - dow);
+  return copy;
+}
+
+function _weekDayDates() {
+  const mon = _mondayOfWeek();
+  const today = _myDayTodayStr();
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(mon);
+    d.setDate(mon.getDate() + i);
+    const dateStr = _dateStr(d);
+    days.push({
+      dateStr,
+      weekday: d.toLocaleDateString('de-DE', { weekday: 'short' }),
+      dayNum: d.getDate(),
+      month: d.toLocaleDateString('de-DE', { month: 'short' }),
+      isToday: dateStr === today,
+    });
   }
+  return days;
+}
+
+function _noteDueDateStr(note) {
+  if (!note?.due_date) return '';
+  if (note.due_date.length === 10) return note.due_date;
+  const d = new Date(note.due_date);
+  return isNaN(d) ? '' : _dateStr(d);
+}
+
+function _isWeekPlanNote(note) {
+  if (!note || note.archived) return false;
+  const lbl = (note.label || '').toLowerCase();
+  if (lbl.includes(WEEK_PLAN_LABEL)) return true;
+  return _noteTags(note).some(t => t.toLowerCase() === WEEK_PLAN_LABEL);
+}
+
+function _collectWeekPlanRowsForDay(dayStr) {
+  const rows = [];
+  for (const note of _notes) {
+    if (!_isWeekPlanNote(note) || _isNoteFullyDone(note)) continue;
+    if (_noteDueDateStr(note) !== dayStr) continue;
+    if (_hasItems(note) && Array.isArray(note.items) && note.items.length > 0) {
+      note.items.forEach((item, idx) => {
+        if (!item.done && (item.text || '').trim()) {
+          rows.push({ note, idx, text: item.text.trim(), kind: 'item' });
+        }
+      });
+    } else {
+      const text = (note.title || note.content || '').trim();
+      if (text) rows.push({ note, idx: null, text, kind: 'note' });
+    }
+  }
+  return rows;
+}
+
+function _calEventRowHtml(ev, extraCls = '') {
+  const time = _fmtMyDayTime(ev.dtstart, ev.all_day, ev.dtend);
+  return `<div class="notes-plan-row notes-plan-event ${extraCls}" data-event-uid="${_esc(ev.uid)}" data-event-start="${_esc(ev.dtstart || '')}" title="Im Kalender öffnen">
+    <span class="notes-plan-badge notes-plan-badge-cal">Kalender</span>
+    <span class="notes-plan-event-time">${_esc(time)}</span>
+    <span class="notes-plan-event-name">${_esc(ev.summary || '(Ohne Titel)')}</span>
+  </div>`;
+}
+
+function _planTodoRowHtml(row, extraCls = '', badge = '') {
+  const idxAttr = row.idx == null ? '' : ` data-idx="${row.idx}"`;
+  const kindAttr = ` data-kind="${row.kind}"`;
+  const badgeHtml = badge ? `<span class="notes-plan-badge notes-plan-badge-week">${_esc(badge)}</span>` : '';
+  return `<div class="notes-plan-row notes-plan-todo ${extraCls}" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}>
+    ${badgeHtml}
+    <span class="note-check-dot" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr} title="Erledigt"></span>
+    <span class="notes-plan-todo-text">${_linkify(row.text)}</span>
+  </div>`;
+}
+
+async function _createWeekPlanItem(dayStr, text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return;
+  await _saveNote({
+    title: trimmed,
+    note_type: 'todo',
+    label: WEEK_PLAN_LABEL,
+    due_date: dayStr,
+  });
+  await _fetchNotes();
+}
+
+function _updatePlanningPaneClass() {
+  const pane = document.getElementById('notes-pane');
+  if (!pane) return;
+  pane.classList.toggle('notes-pane-planning', _activeFilter === 'myday' || _activeFilter === 'myweek');
+}
+
+function _wirePlanTodoRows(body) {
+  body.querySelectorAll('.notes-plan-todo .note-check-dot').forEach(dot => {
+    dot.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = dot.dataset.noteId;
+      const kind = dot.dataset.kind;
+      const idx = dot.dataset.idx != null ? parseInt(dot.dataset.idx, 10) : null;
+      const note = _notes.find(n => n.id === id);
+      if (!note) return;
+      const row = dot.closest('.notes-plan-row');
+      try {
+        if (kind === 'item' && Array.isArray(note.items) && note.items[idx]) {
+          note.items[idx].done = true;
+          await _patchNote(id, { items: note.items });
+          if (note.items.every(it => it.done)) {
+            const r = (row || dot).getBoundingClientRect();
+            spawnConfetti(r.left + r.width / 2, r.top + r.height / 2, 60);
+          }
+        } else {
+          note.archived = true;
+          await _patchNote(id, { archived: true });
+        }
+        _renderNotes();
+      } catch {
+        uiModule.showError?.('Konnte Eintrag nicht aktualisieren');
+      }
+    });
+  });
+  body.querySelectorAll('.notes-plan-todo-text').forEach(el => {
+    el.addEventListener('click', () => {
+      const row = el.closest('.notes-plan-todo');
+      const id = row?.dataset?.noteId;
+      if (!id) return;
+      _editNote(id);
+    });
+  });
+}
+
+function _wirePlanEventRows(body) {
+  body.querySelectorAll('.notes-plan-event').forEach(el => {
+    el.addEventListener('click', async () => {
+      const start = el.dataset.eventStart;
+      try {
+        const cal = await import('./calendar.js');
+        if (start) cal.openCalendarTo?.(start);
+        else cal.openCalendar?.();
+      } catch {
+        uiModule.showToast?.('Kalender konnte nicht geöffnet werden');
+      }
+    });
+  });
 }
 
 function _persistNotesFilter() {
@@ -706,7 +866,7 @@ function _restoreNotesFilter() {
       return;
     }
     const saved = localStorage.getItem(NOTES_FILTER_KEY);
-    if (saved === 'myday') _activeFilter = 'myday';
+    if (saved === 'myday' || saved === 'myweek') _activeFilter = saved;
   } catch {}
 }
 
@@ -1629,6 +1789,7 @@ function _renderLabels(root = document) {
   const mydayIcon = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:2px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
   let html = `<button class="notes-label-chip${allActive ? ' active' : ''}" data-action="all">All</button>`;
   html += `<button class="notes-label-chip notes-label-chip-myday${_activeFilter === 'myday' ? ' active' : ''}" data-action="myday" title="Heutige Termine und offene To-dos">${mydayIcon}Mein Tag <span class="notes-label-chip-count">${mydayCount}</span></button>`;
+  html += `<button class="notes-label-chip notes-label-chip-myweek${_activeFilter === 'myweek' ? ' active' : ''}" data-action="myweek" title="Wochenplan mit Kalender-Terminen">${mydayIcon}Meine Woche</button>`;
   html += `<button class="notes-label-chip${_activeFilter === 'default' ? ' active' : ''}" data-action="default" title="Show notes without tags">Default <span class="notes-label-chip-count">${defaultCount}</span></button>`;
   if (todayCount > 0) {
     const isOn = _activeFilter === 'today';
@@ -1665,6 +1826,10 @@ function _renderLabels(root = document) {
       } else if (chip.dataset.action === 'myday') {
         _activeLabel = null;
         _activeFilter = (_activeFilter === 'myday') ? null : 'myday';
+        _persistNotesFilter();
+      } else if (chip.dataset.action === 'myweek') {
+        _activeLabel = null;
+        _activeFilter = (_activeFilter === 'myweek') ? null : 'myweek';
         _persistNotesFilter();
       } else if (chip.dataset.action === 'today') {
         _activeLabel = null;
@@ -1834,12 +1999,18 @@ function _animateReflow(prevPositions) {
 
 function _renderNotes() {
   _updateRailBadge();
+  _updatePlanningPaneClass();
   const body = document.querySelector('#notes-pane .notes-pane-body');
   if (!body) return;
   if (_activeFilter === 'myday') {
     _renderMyDayView(body);
     return;
   }
+  if (_activeFilter === 'myweek') {
+    _renderMyWeekView(body);
+    return;
+  }
+  body.classList.remove('notes-planning-body');
   const prevPositions = _captureCardPositions();
   const activeReminderHighlights = _loadActiveHighlights();
 
@@ -2151,116 +2322,141 @@ function _applyMasonry(body) {
   }
 }
 
-// ── Mein Tag (daily todos + calendar events) ─────────────────────────────
+// ── Mein Tag / Meine Woche (daily + weekly planning) ─────────────────────
 
 async function _renderMyDayView(body) {
   const token = ++_mydayRenderToken;
   body.innerHTML = '';
+  body.classList.add('notes-planning-body');
   _renderLabelsInto(body);
   _renderQuickAdd(body);
-  body.insertAdjacentHTML('beforeend', '<div class="notes-myday-loading">Lade deinen Tag…</div>');
+  body.insertAdjacentHTML('beforeend', '<div class="notes-plan-loading">Lade deinen Tag…</div>');
 
-  const events = await _fetchTodayEvents();
+  const today = _myDayTodayStr();
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const events = _eventsOnDay(await _fetchEventsForRange(today, _dateStr(tomorrow)), today);
   if (token !== _mydayRenderToken) return;
 
+  const weekRows = _collectWeekPlanRowsForDay(today);
   const todoRows = _collectMyDayTodoRows();
-  body.querySelector('.notes-myday-loading')?.remove();
+  body.querySelector('.notes-plan-loading')?.remove();
 
   const dayLabel = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
-  let html = `<div class="notes-myday-wrap">
-    <div class="notes-myday-header">
+  let html = `<div class="notes-plan-wrap notes-myday-wrap">
+    <div class="notes-plan-header">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
       <span>Mein Tag &middot; ${_esc(dayLabel)}</span>
     </div>`;
 
-  html += `<div class="notes-myday-section">
-    <div class="notes-myday-section-title">Termine <span class="notes-myday-section-count">${events.length}</span></div>`;
+  html += `<div class="notes-plan-section">
+    <div class="notes-plan-section-title">Kalender <span class="notes-plan-section-count">${events.length}</span></div>`;
   if (!events.length) {
-    html += '<div class="notes-myday-empty">Keine Termine heute</div>';
+    html += '<div class="notes-plan-empty">Keine Kalender-Termine heute</div>';
   } else {
-    html += '<div class="notes-myday-list">';
-    for (const ev of events) {
-      const time = _fmtMyDayTime(ev.dtstart, ev.all_day, ev.dtend);
-      html += `<div class="notes-myday-row notes-myday-event" data-event-uid="${_esc(ev.uid)}" data-event-start="${_esc(ev.dtstart || '')}" title="Im Kalender öffnen">
-        <span class="notes-myday-event-time">${_esc(time)}</span>
-        <span class="notes-myday-event-name">${_esc(ev.summary || '(Ohne Titel)')}</span>
-      </div>`;
-    }
+    html += '<div class="notes-plan-list">';
+    for (const ev of events) html += _calEventRowHtml(ev);
     html += '</div>';
   }
   html += '</div>';
 
-  html += `<div class="notes-myday-section">
-    <div class="notes-myday-section-title">To-dos <span class="notes-myday-section-count">${todoRows.length}</span></div>`;
+  if (weekRows.length) {
+    html += `<div class="notes-plan-section">
+      <div class="notes-plan-section-title">Aus meiner Woche <span class="notes-plan-section-count">${weekRows.length}</span></div>
+      <div class="notes-plan-list">`;
+    for (const row of weekRows) html += _planTodoRowHtml(row, '', 'Woche');
+    html += '</div></div>';
+  }
+
+  html += `<div class="notes-plan-section">
+    <div class="notes-plan-section-title">Weitere To-dos <span class="notes-plan-section-count">${todoRows.length}</span></div>`;
   if (!todoRows.length) {
-    html += '<div class="notes-myday-empty">Keine offenen To-dos — oben eintippen</div>';
+    html += '<div class="notes-plan-empty">Keine weiteren To-dos — oben eintippen</div>';
   } else {
-    html += '<div class="notes-myday-list">';
-    for (const row of todoRows) {
-      const idxAttr = row.idx == null ? '' : ` data-idx="${row.idx}"`;
-      const kindAttr = ` data-kind="${row.kind}"`;
-      html += `<div class="notes-myday-row notes-myday-todo" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}>
-        <span class="note-check-dot" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr} title="Erledigt"></span>
-        <span class="notes-myday-todo-text">${_linkify(row.text)}</span>
-      </div>`;
-    }
+    html += '<div class="notes-plan-list">';
+    for (const row of todoRows) html += _planTodoRowHtml(row);
     html += '</div>';
   }
   html += '</div></div>';
 
   body.insertAdjacentHTML('beforeend', html);
-  _wireMyDayView(body);
+  _wirePlanTodoRows(body);
+  _wirePlanEventRows(body);
+}
+
+async function _renderMyWeekView(body) {
+  const token = ++_myweekRenderToken;
+  body.innerHTML = '';
+  body.classList.add('notes-planning-body');
+  _renderLabelsInto(body);
+  body.insertAdjacentHTML('beforeend', '<div class="notes-plan-loading">Lade deine Woche…</div>');
+
+  const days = _weekDayDates();
+  const rangeStart = days[0].dateStr;
+  const rangeEndDate = new Date(days[6].dateStr);
+  rangeEndDate.setDate(rangeEndDate.getDate() + 1);
+  const allEvents = await _fetchEventsForRange(rangeStart, _dateStr(rangeEndDate));
+  if (token !== _myweekRenderToken) return;
+
+  body.querySelector('.notes-plan-loading')?.remove();
+
+  const weekLabel = `${days[0].dayNum}. ${days[0].month} – ${days[6].dayNum}. ${days[6].month}`;
+  let html = `<div class="notes-plan-wrap notes-myweek-wrap">
+    <div class="notes-plan-header">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <span>Meine Woche &middot; ${_esc(weekLabel)}</span>
+    </div>
+    <p class="notes-plan-hint">Kalender-Termine erscheinen automatisch (orange). Darunter planst du mit <strong>+ Planen</strong> — am Tag landen sie in <em>Mein Tag</em>.</p>
+    <div class="notes-myweek-days">`;
+
+  for (const day of days) {
+    const dayEvents = _eventsOnDay(allEvents, day.dateStr);
+    const planRows = _collectWeekPlanRowsForDay(day.dateStr);
+    html += `<div class="notes-myweek-day${day.isToday ? ' is-today' : ''}" data-date="${_esc(day.dateStr)}">
+      <div class="notes-myweek-day-head">
+        <span class="notes-myweek-weekday">${_esc(day.weekday)}</span>
+        <span class="notes-myweek-date">${day.dayNum}. ${_esc(day.month)}</span>
+        ${day.isToday ? '<span class="notes-myweek-today-badge">Heute</span>' : ''}
+      </div>
+      <div class="notes-myweek-day-body">`;
+    if (!dayEvents.length && !planRows.length) {
+      html += '<div class="notes-plan-empty notes-myweek-empty">—</div>';
+    } else {
+      html += '<div class="notes-plan-list">';
+      for (const ev of dayEvents) html += _calEventRowHtml(ev, 'notes-plan-row-compact');
+      for (const row of planRows) html += _planTodoRowHtml(row, 'notes-plan-row-compact', 'Woche');
+      html += '</div>';
+    }
+    html += `<input type="text" class="notes-myweek-add" data-date="${_esc(day.dateStr)}" placeholder="+ Planen…" aria-label="Plan für ${day.weekday}" />
+      </div></div>`;
+  }
+
+  html += '</div></div>';
+  body.insertAdjacentHTML('beforeend', html);
+  _wirePlanTodoRows(body);
+  _wirePlanEventRows(body);
+  body.querySelectorAll('.notes-myweek-add').forEach(input => {
+    input.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const dateStr = input.dataset.date;
+      const text = input.value;
+      input.disabled = true;
+      try {
+        await _createWeekPlanItem(dateStr, text);
+        input.value = '';
+        _renderNotes();
+      } catch {
+        uiModule.showError?.('Konnte Wochen-Eintrag nicht speichern');
+        input.disabled = false;
+      }
+    });
+  });
 }
 
 function _wireMyDayView(body) {
-  body.querySelectorAll('.notes-myday-todo .note-check-dot').forEach(dot => {
-    dot.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const id = dot.dataset.noteId;
-      const kind = dot.dataset.kind;
-      const idx = dot.dataset.idx != null ? parseInt(dot.dataset.idx, 10) : null;
-      const note = _notes.find(n => n.id === id);
-      if (!note) return;
-      const row = dot.closest('.notes-myday-row');
-      try {
-        if (kind === 'item' && Array.isArray(note.items) && note.items[idx]) {
-          note.items[idx].done = true;
-          await _patchNote(id, { items: note.items });
-          if (note.items.every(it => it.done)) {
-            const r = (row || dot).getBoundingClientRect();
-            spawnConfetti(r.left + r.width / 2, r.top + r.height / 2, 60);
-          }
-        } else {
-          note.archived = true;
-          await _patchNote(id, { archived: true });
-        }
-        _renderNotes();
-      } catch {
-        uiModule.showError?.('Konnte To-do nicht aktualisieren');
-      }
-    });
-  });
-  body.querySelectorAll('.notes-myday-todo-text').forEach(el => {
-    el.addEventListener('click', () => {
-      const row = el.closest('.notes-myday-todo');
-      const id = row?.dataset?.noteId;
-      if (!id) return;
-      _activeFilter = 'myday';
-      _editNote(id);
-    });
-  });
-  body.querySelectorAll('.notes-myday-event').forEach(el => {
-    el.addEventListener('click', async () => {
-      const start = el.dataset.eventStart;
-      try {
-        const cal = await import('./calendar.js');
-        if (start) cal.openCalendarTo?.(start);
-        else cal.openCalendar?.();
-      } catch {
-        uiModule.showToast?.('Kalender konnte nicht geöffnet werden');
-      }
-    });
-  });
+  _wirePlanTodoRows(body);
+  _wirePlanEventRows(body);
 }
 
 // Wire the Today aggregated view: tap a step's dot toggles it done; tap
