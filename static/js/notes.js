@@ -19,7 +19,7 @@ let _notes = [];
 let _editingId = null;
 let _selectedIds = new Set();
 let _activeLabel = null;
-let _activeFilter = null; // null | 'default' | 'reminders' | 'no-reminders'
+let _activeFilter = null; // null | 'default' | 'reminders' | 'no-reminders' | 'today' | 'goals' | 'myday'
 // Cycle order for the Reminders chip: each click on it advances reminders →
 // null → no-reminders → null → reminders → ... This var tracks which non-null
 // state the next click should land on after passing through null.
@@ -48,6 +48,9 @@ const REMINDER_ACTIVE_HIGHLIGHT_KEY = 'odysseus-notes-reminder-active-highlight'
 // the rail "fired" badge so old reminders don't re-fire on every page reload.
 const REMINDER_DISMISSED_AT_KEY = 'odysseus-notes-reminder-dismissed-at';
 const NOTES_FIRST_OPEN_HINT_KEY = 'odysseus-notes-first-open-hint-v1';
+const NOTES_FILTER_KEY = 'odysseus-notes-active-filter';
+const NOTES_MYDAY_INTRO_KEY = 'odysseus-notes-myday-v1';
+let _mydayRenderToken = 0;
 
 function _forceCloseNotesPanel() {
   _open = false;
@@ -599,6 +602,114 @@ function _isDueTodayOrOverdue(dateStr) {
   return due <= today;
 }
 
+function _dateStr(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function _myDayTodayStr() {
+  return _dateStr(new Date());
+}
+
+function _localDateOfIso(dtstart) {
+  if (!dtstart) return '';
+  if (dtstart.length === 10) return dtstart;
+  const d = new Date(dtstart);
+  if (isNaN(d)) return '';
+  return _dateStr(d);
+}
+
+function _isDailyTodoNote(note) {
+  if (!note || note.archived || note.note_type === 'goal' || note.note_type === 'draw') return false;
+  if (note.note_type === 'todo' || note.note_type === 'checklist') return true;
+  const lbl = (note.label || '').toLowerCase();
+  return lbl === 'todo' || lbl.includes('todo');
+}
+
+function _isOpenTodoForMyDay(note) {
+  if (!_isDailyTodoNote(note) || _isNoteFullyDone(note)) return false;
+  if (!note.due_date) return true;
+  return _isDueTodayOrOverdue(note.due_date);
+}
+
+function _collectMyDayTodoRows() {
+  const rows = [];
+  for (const note of _notes) {
+    if (!_isOpenTodoForMyDay(note)) continue;
+    if (_hasItems(note) && Array.isArray(note.items) && note.items.length > 0) {
+      note.items.forEach((item, idx) => {
+        if (!item.done && (item.text || '').trim()) {
+          rows.push({ note, idx, text: item.text.trim(), kind: 'item' });
+        }
+      });
+    } else {
+      const text = (note.title || note.content || '').trim();
+      if (text) rows.push({ note, idx: null, text, kind: 'note' });
+    }
+  }
+  return rows;
+}
+
+function _myDayTodoCount() {
+  return _collectMyDayTodoRows().length;
+}
+
+function _fmtMyDayTime(dtstart, allDay, dtend) {
+  if (allDay) return 'Ganztägig';
+  const d = new Date(dtstart);
+  if (isNaN(d)) return '';
+  const t0 = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (dtend) {
+    const end = new Date(dtend);
+    if (!isNaN(end)) {
+      const t1 = end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `${t0} – ${t1}`;
+    }
+  }
+  return t0;
+}
+
+async function _fetchTodayEvents() {
+  const today = _myDayTodayStr();
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const end = _dateStr(tomorrow);
+  try {
+    const res = await fetch(`${API_BASE}/api/calendar/events?start=${today}&end=${end}`, { credentials: 'same-origin' });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const events = data.events || [];
+    return events.filter(ev => {
+      if (ev.all_day) {
+        if (ev.dtstart === ev.dtend) return ev.dtstart === today;
+        return ev.dtstart <= today && ev.dtend > today;
+      }
+      return _localDateOfIso(ev.dtstart) === today;
+    }).sort((a, b) => (a.dtstart || '').localeCompare(b.dtstart || ''));
+  } catch {
+    return [];
+  }
+}
+
+function _persistNotesFilter() {
+  try {
+    localStorage.setItem(NOTES_FILTER_KEY, _activeFilter || 'all');
+  } catch {}
+}
+
+function _restoreNotesFilter() {
+  try {
+    if (!localStorage.getItem(NOTES_MYDAY_INTRO_KEY)) {
+      _activeFilter = 'myday';
+      localStorage.setItem(NOTES_MYDAY_INTRO_KEY, '1');
+      _persistNotesFilter();
+      return;
+    }
+    const saved = localStorage.getItem(NOTES_FILTER_KEY);
+    if (saved === 'myday') _activeFilter = 'myday';
+  } catch {}
+}
+
 function _isNoteFullyDone(note) {
   if (_hasItems(note) && Array.isArray(note.items) && note.items.length > 0) {
     return note.items.every(it => it.done);
@@ -1122,6 +1233,7 @@ export function openPanel() {
   _open = true;
   _editingId = null;
   _searchQuery = '';
+  _restoreNotesFilter();
   _clearViewedReminderGlows();
   _firedDotDismissedAt = Date.now();
   try { localStorage.setItem(REMINDER_DISMISSED_AT_KEY, String(_firedDotDismissedAt)); } catch {}
@@ -1513,7 +1625,10 @@ function _renderLabels(root = document) {
   const todayCount = _notes.filter(n => n.note_type === 'goal' && !n.archived && _nextGoalStep(n)).length;
   bar.style.display = '';
   const allActive = _activeLabel === null && _activeFilter === null;
+  const mydayCount = _myDayTodoCount();
+  const mydayIcon = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:2px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
   let html = `<button class="notes-label-chip${allActive ? ' active' : ''}" data-action="all">All</button>`;
+  html += `<button class="notes-label-chip notes-label-chip-myday${_activeFilter === 'myday' ? ' active' : ''}" data-action="myday" title="Heutige Termine und offene To-dos">${mydayIcon}Mein Tag <span class="notes-label-chip-count">${mydayCount}</span></button>`;
   html += `<button class="notes-label-chip${_activeFilter === 'default' ? ' active' : ''}" data-action="default" title="Show notes without tags">Default <span class="notes-label-chip-count">${defaultCount}</span></button>`;
   if (todayCount > 0) {
     const isOn = _activeFilter === 'today';
@@ -1546,15 +1661,23 @@ function _renderLabels(root = document) {
       if (chip.dataset.action === 'all') {
         _activeLabel = null;
         _activeFilter = null;
+        _persistNotesFilter();
+      } else if (chip.dataset.action === 'myday') {
+        _activeLabel = null;
+        _activeFilter = (_activeFilter === 'myday') ? null : 'myday';
+        _persistNotesFilter();
       } else if (chip.dataset.action === 'today') {
         _activeLabel = null;
         _activeFilter = (_activeFilter === 'today') ? null : 'today';
+        _persistNotesFilter();
       } else if (chip.dataset.action === 'goals') {
         _activeLabel = null;
         _activeFilter = (_activeFilter === 'goals') ? null : 'goals';
+        _persistNotesFilter();
       } else if (chip.dataset.action === 'default') {
         _activeLabel = null;
         _activeFilter = (_activeFilter === 'default') ? null : 'default';
+        _persistNotesFilter();
       } else if (chip.dataset.action === 'reminders') {
         _activeLabel = null;
         // Cycle: null → reminders → null → no-reminders → null → reminders → ...
@@ -1713,6 +1836,10 @@ function _renderNotes() {
   _updateRailBadge();
   const body = document.querySelector('#notes-pane .notes-pane-body');
   if (!body) return;
+  if (_activeFilter === 'myday') {
+    _renderMyDayView(body);
+    return;
+  }
   const prevPositions = _captureCardPositions();
   const activeReminderHighlights = _loadActiveHighlights();
 
@@ -2022,6 +2149,118 @@ function _applyMasonry(body) {
     body.querySelectorAll('.note-card').forEach(c => _masonryObserver.observe(c));
     body.querySelectorAll('.notes-labels-bar, .notes-quick-add, .note-form').forEach(c => _masonryObserver.observe(c));
   }
+}
+
+// ── Mein Tag (daily todos + calendar events) ─────────────────────────────
+
+async function _renderMyDayView(body) {
+  const token = ++_mydayRenderToken;
+  body.innerHTML = '';
+  _renderLabelsInto(body);
+  _renderQuickAdd(body);
+  body.insertAdjacentHTML('beforeend', '<div class="notes-myday-loading">Lade deinen Tag…</div>');
+
+  const events = await _fetchTodayEvents();
+  if (token !== _mydayRenderToken) return;
+
+  const todoRows = _collectMyDayTodoRows();
+  body.querySelector('.notes-myday-loading')?.remove();
+
+  const dayLabel = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+  let html = `<div class="notes-myday-wrap">
+    <div class="notes-myday-header">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <span>Mein Tag &middot; ${_esc(dayLabel)}</span>
+    </div>`;
+
+  html += `<div class="notes-myday-section">
+    <div class="notes-myday-section-title">Termine <span class="notes-myday-section-count">${events.length}</span></div>`;
+  if (!events.length) {
+    html += '<div class="notes-myday-empty">Keine Termine heute</div>';
+  } else {
+    html += '<div class="notes-myday-list">';
+    for (const ev of events) {
+      const time = _fmtMyDayTime(ev.dtstart, ev.all_day, ev.dtend);
+      html += `<div class="notes-myday-row notes-myday-event" data-event-uid="${_esc(ev.uid)}" data-event-start="${_esc(ev.dtstart || '')}" title="Im Kalender öffnen">
+        <span class="notes-myday-event-time">${_esc(time)}</span>
+        <span class="notes-myday-event-name">${_esc(ev.summary || '(Ohne Titel)')}</span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  html += `<div class="notes-myday-section">
+    <div class="notes-myday-section-title">To-dos <span class="notes-myday-section-count">${todoRows.length}</span></div>`;
+  if (!todoRows.length) {
+    html += '<div class="notes-myday-empty">Keine offenen To-dos — oben eintippen</div>';
+  } else {
+    html += '<div class="notes-myday-list">';
+    for (const row of todoRows) {
+      const idxAttr = row.idx == null ? '' : ` data-idx="${row.idx}"`;
+      const kindAttr = ` data-kind="${row.kind}"`;
+      html += `<div class="notes-myday-row notes-myday-todo" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}>
+        <span class="note-check-dot" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr} title="Erledigt"></span>
+        <span class="notes-myday-todo-text">${_linkify(row.text)}</span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div></div>';
+
+  body.insertAdjacentHTML('beforeend', html);
+  _wireMyDayView(body);
+}
+
+function _wireMyDayView(body) {
+  body.querySelectorAll('.notes-myday-todo .note-check-dot').forEach(dot => {
+    dot.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = dot.dataset.noteId;
+      const kind = dot.dataset.kind;
+      const idx = dot.dataset.idx != null ? parseInt(dot.dataset.idx, 10) : null;
+      const note = _notes.find(n => n.id === id);
+      if (!note) return;
+      const row = dot.closest('.notes-myday-row');
+      try {
+        if (kind === 'item' && Array.isArray(note.items) && note.items[idx]) {
+          note.items[idx].done = true;
+          await _patchNote(id, { items: note.items });
+          if (note.items.every(it => it.done)) {
+            const r = (row || dot).getBoundingClientRect();
+            spawnConfetti(r.left + r.width / 2, r.top + r.height / 2, 60);
+          }
+        } else {
+          note.archived = true;
+          await _patchNote(id, { archived: true });
+        }
+        _renderNotes();
+      } catch {
+        uiModule.showError?.('Konnte To-do nicht aktualisieren');
+      }
+    });
+  });
+  body.querySelectorAll('.notes-myday-todo-text').forEach(el => {
+    el.addEventListener('click', () => {
+      const row = el.closest('.notes-myday-todo');
+      const id = row?.dataset?.noteId;
+      if (!id) return;
+      _activeFilter = 'myday';
+      _editNote(id);
+    });
+  });
+  body.querySelectorAll('.notes-myday-event').forEach(el => {
+    el.addEventListener('click', async () => {
+      const start = el.dataset.eventStart;
+      try {
+        const cal = await import('./calendar.js');
+        if (start) cal.openCalendarTo?.(start);
+        else cal.openCalendar?.();
+      } catch {
+        uiModule.showToast?.('Kalender konnte nicht geöffnet werden');
+      }
+    });
+  });
 }
 
 // Wire the Today aggregated view: tap a step's dot toggles it done; tap

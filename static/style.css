@@ -35637,6 +35637,109 @@ body.notes-mobile-mode.notes-drag-mode .note-card-pin.active {
   opacity: 0.6;
   font-variant-numeric: tabular-nums;
 }
+
+/* ── Mein Tag (todos + calendar) ─────────────────────────────────────── */
+.notes-label-chip-myday.active {
+  border-color: color-mix(in srgb, var(--accent-warm) 55%, var(--border));
+}
+.notes-myday-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 4px 0 12px;
+}
+.notes-myday-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent-warm);
+  padding: 6px 10px 2px;
+}
+.notes-myday-loading,
+.notes-myday-empty {
+  font-size: 12px;
+  opacity: 0.55;
+  font-style: italic;
+  padding: 8px 12px;
+}
+.notes-myday-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.notes-myday-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.65;
+  padding: 0 10px;
+}
+.notes-myday-section-count {
+  font-weight: 600;
+  opacity: 0.8;
+}
+.notes-myday-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.notes-myday-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--panel, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: opacity 0.2s, transform 0.2s;
+}
+.notes-myday-todo {
+  border-left: 3px solid color-mix(in srgb, var(--accent-warm) 70%, transparent);
+}
+.notes-myday-event {
+  border-left: 3px solid color-mix(in srgb, var(--accent, var(--red)) 65%, transparent);
+  cursor: pointer;
+}
+.notes-myday-event:hover {
+  background: color-mix(in srgb, var(--accent, var(--red)) 6%, var(--panel, var(--bg)));
+}
+.notes-myday-event-time {
+  flex-shrink: 0;
+  width: 88px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+.notes-myday-event-name {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.notes-myday-todo .note-check-dot {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--fg) 40%, transparent);
+  cursor: pointer;
+}
+.notes-myday-todo .note-check-dot:hover {
+  border-color: var(--accent-warm);
+}
+.notes-myday-todo-text {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.notes-myday-todo-text:hover {
+  text-decoration: underline;
+}
+
 .notes-empty {
   text-align: center;
   padding: 32px 16px;
