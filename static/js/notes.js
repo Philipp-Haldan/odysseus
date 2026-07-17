@@ -2519,8 +2519,8 @@ async function _renderMyWeekView(body) {
 }
 
 // ── Meine Woche: drag tasks between day cards ───────────────────────────
-const MYWEEK_LONG_PRESS_MS = 450;
-const MYWEEK_MOVE_CANCEL_PX = 10;
+const MYWEEK_LONG_PRESS_MS = 500;
+const MYWEEK_MOVE_CANCEL_PX = 12;
 const MYWEEK_MOUSE_DRAG_PX = 5;
 
 let _myWeekDrag = null;       // active drag session
@@ -2566,8 +2566,28 @@ async function _moveMyWeekNoteToDay(noteId, targetDayStr, sourceDayStr) {
   }
 }
 
+function _myWeekPointerPoint(pointer) {
+  return {
+    clientX: pointer?.clientX ?? 0,
+    clientY: pointer?.clientY ?? 0,
+    pointerId: pointer?.pointerId,
+  };
+}
+
+function _activateMyWeekDrag(row, pointer) {
+  if (_myWeekDrag || !row) return;
+  const pt = _myWeekPointerPoint(pointer);
+  _beginMyWeekDrag(row, pt);
+  if (pt.pointerId != null) {
+    _myWeekDrag.pointerId = pt.pointerId;
+    try { row.setPointerCapture(pt.pointerId); } catch {}
+  }
+  _updateMyWeekDragGhost(pt);
+}
+
 function _beginMyWeekDrag(row, pointer) {
   if (_myWeekDrag || !row) return;
+  const pt = _myWeekPointerPoint(pointer);
   const rect = row.getBoundingClientRect();
   const ghost = row.cloneNode(true);
   ghost.classList.add('notes-myweek-drag-ghost');
@@ -2577,25 +2597,27 @@ function _beginMyWeekDrag(row, pointer) {
 
   row.classList.add('notes-myweek-source-dim');
   document.body.classList.add('notes-myweek-drag-active');
+  document.querySelector('#notes-pane .notes-pane-body')?.classList.add('notes-myweek-drag-scroll-lock');
 
   _myWeekDrag = {
     row,
     ghost,
     noteId: row.dataset.noteId,
     sourceDay: row.dataset.sourceDay || row.closest('.notes-myweek-day')?.dataset?.date || '',
-    grabOffsetX: pointer.clientX - rect.left,
-    grabOffsetY: pointer.clientY - rect.top,
+    grabOffsetX: pt.clientX - rect.left,
+    grabOffsetY: pt.clientY - rect.top,
     ghostW: rect.width,
     ghostH: rect.height,
+    pointerId: pt.pointerId,
   };
   _myWeekDragMoved = false;
 
   ghost.style.width = rect.width + 'px';
-  ghost.style.left = (pointer.clientX - _myWeekDrag.grabOffsetX) + 'px';
-  ghost.style.top = (pointer.clientY - _myWeekDrag.grabOffsetY) + 'px';
+  ghost.style.left = (pt.clientX - _myWeekDrag.grabOffsetX) + 'px';
+  ghost.style.top = (pt.clientY - _myWeekDrag.grabOffsetY) + 'px';
 
   try { navigator.vibrate?.(12); } catch {}
-  _highlightMyWeekDropTarget(pointer.clientX, pointer.clientY, _myWeekDrag.sourceDay);
+  _highlightMyWeekDropTarget(pt.clientX, pt.clientY, _myWeekDrag.sourceDay);
 }
 
 function _updateMyWeekDragGhost(pointer) {
@@ -2621,6 +2643,7 @@ function _endMyWeekDrag(commit) {
   _myWeekDrag = null;
   _clearMyWeekDropHighlights();
   document.body.classList.remove('notes-myweek-drag-active');
+  document.querySelector('#notes-pane .notes-pane-body')?.classList.remove('notes-myweek-drag-scroll-lock');
 
   if (!drag) return;
 
@@ -2647,6 +2670,9 @@ function _onMyWeekPointerMove(e) {
   }
   if (!_myWeekPending || e.pointerId !== _myWeekPending.pointerId) return;
 
+  _myWeekPending.lastX = e.clientX;
+  _myWeekPending.lastY = e.clientY;
+
   const dx = e.clientX - _myWeekPending.startX;
   const dy = e.clientY - _myWeekPending.startY;
   const dist = Math.hypot(dx, dy);
@@ -2661,11 +2687,8 @@ function _onMyWeekPointerMove(e) {
 
   if (!_myWeekPending.started && dist >= MYWEEK_MOUSE_DRAG_PX) {
     _myWeekPending.started = true;
-    _beginMyWeekDrag(_myWeekPending.row, e);
-    _myWeekDrag.pointerId = e.pointerId;
-    try { _myWeekPending.row.setPointerCapture(e.pointerId); } catch {}
+    _activateMyWeekDrag(_myWeekPending.row, e);
     e.preventDefault();
-    _updateMyWeekDragGhost(e);
   }
 }
 
@@ -2720,6 +2743,8 @@ function _wireMyWeekDragDrop(body) {
         pointerId: e.pointerId,
         startX: e.clientX,
         startY: e.clientY,
+        lastX: e.clientX,
+        lastY: e.clientY,
         isTouch,
         started: false,
         timer: null,
@@ -2731,10 +2756,11 @@ function _wireMyWeekDragDrop(body) {
           _myWeekPending.started = true;
           const pending = _myWeekPending;
           _myWeekPending = null;
-          _beginMyWeekDrag(pending.row, e);
-          _myWeekDrag.pointerId = e.pointerId;
-          try { pending.row.setPointerCapture(e.pointerId); } catch {}
-          _updateMyWeekDragGhost(e);
+          _activateMyWeekDrag(pending.row, {
+            clientX: pending.lastX,
+            clientY: pending.lastY,
+            pointerId: pending.pointerId,
+          });
         }, MYWEEK_LONG_PRESS_MS);
       }
     });

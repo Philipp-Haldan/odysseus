@@ -33102,6 +33102,9 @@ body.notes-view .chat-container { flex: 1; min-width: 0; }
     height: 100dvh !important;
     max-height: 100dvh !important;
     z-index: 170;
+    /* Keep the sheet grabber + header below the iOS notch / status bar. */
+    padding-top: env(safe-area-inset-top, 0px);
+    box-sizing: border-box;
     /* Bottom-sheet treatment like the document editor: stroked, rounded top,
        slides up from the bottom. */
     border: 1px solid var(--border);
@@ -33128,7 +33131,7 @@ body.notes-view .chat-container { flex: 1; min-width: 0; }
   body.notes-view .notes-mobile-grabber {
     display: block;
     flex-shrink: 0;
-    height: 18px;
+    height: 22px;
     position: relative;
     background: var(--bg);
     touch-action: none;
@@ -33137,7 +33140,7 @@ body.notes-view .chat-container { flex: 1; min-width: 0; }
   body.notes-view .notes-mobile-grabber::before {
     content: '';
     position: absolute;
-    top: 7px;
+    top: 10px;
     left: 50%;
     transform: translateX(-50%);
     width: 36px;
@@ -35653,6 +35656,8 @@ body.notes-mobile-mode.notes-drag-mode .note-card-pin.active {
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
 }
 .notes-pane.notes-pane-planning .notes-labels-bar,
 .notes-pane.notes-pane-planning.notes-view-grid .notes-labels-bar {
@@ -35986,6 +35991,7 @@ body.notes-mobile-mode.notes-drag-mode .note-card-pin.active {
   cursor: grab;
   -webkit-user-select: none;
   user-select: none;
+  touch-action: pan-y;
 }
 .notes-myweek-draggable:active {
   cursor: grabbing;
@@ -35994,6 +36000,12 @@ body.notes-myweek-drag-active {
   -webkit-user-select: none;
   user-select: none;
   cursor: grabbing;
+  touch-action: none;
+}
+body.notes-myweek-drag-active .notes-pane.notes-pane-planning .notes-pane-body,
+body.notes-myweek-drag-active .notes-pane-body.notes-myweek-drag-scroll-lock {
+  overflow: hidden !important;
+  touch-action: none;
 }
 .notes-myweek-source-dim {
   opacity: 0.35;
@@ -36014,6 +36026,25 @@ body.notes-myweek-drag-active {
 }
 .notes-myweek-day-drop-target .notes-myweek-day-head {
   color: var(--accent-warm);
+}
+
+@media (max-width: 768px) {
+  /* Let the pane body own vertical scroll on phones — per-day inner
+     scrollers trap touch gestures and block reaching later days. */
+  .notes-myweek-day .notes-plan-list {
+    max-height: none;
+    overflow-y: visible;
+    overscroll-behavior: auto;
+  }
+  /* Tools chevron (overflow menu collapse) — larger touch target on phones. */
+  .overflow-plus-btn {
+    min-width: 44px;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+  .hamburger-btn {
+    top: calc(10px + env(safe-area-inset-top, 0px));
+  }
 }
 
 .notes-myday-wrap {

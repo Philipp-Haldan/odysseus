@@ -2025,16 +2025,28 @@ function initializeEventListeners() {
       menu.style.left = r.left + 'px';
       menu.style.right = 'auto';
       menu.style.bottom = 'auto';
-      menu.style.maxHeight = '';      // reset so we can measure the natural height
+      menu.style.maxHeight = '';
       menu.style.overflowY = '';
-      const avail = r.top - 16;        // room above the chevron
+      menu.style.transformOrigin = 'bottom left';
+      const gap = 8;
+      const safeTop = (window.visualViewport?.offsetTop || 0) + 8;
+      const safeBottom = (window.visualViewport?.offsetTop || 0) + (window.visualViewport?.height || window.innerHeight) - 8;
       const natural = menu.scrollHeight;
-      const h = Math.min(natural, avail);
-      if (natural > avail) {           // only cap + scroll when it doesn't fit
-        menu.style.maxHeight = avail + 'px';
+      const availAbove = r.top - gap - safeTop;
+      const availBelow = safeBottom - r.bottom - gap;
+      const openBelow = availAbove < Math.min(natural, 120) && availBelow > availAbove;
+      const avail = openBelow ? availBelow : availAbove;
+      const h = Math.min(natural, Math.max(avail, 80));
+      if (natural > avail) {
+        menu.style.maxHeight = Math.max(avail, 80) + 'px';
         menu.style.overflowY = 'auto';
       }
-      menu.style.top = (r.top - 8 - h) + 'px';
+      if (openBelow) {
+        menu.style.transformOrigin = 'top left';
+        menu.style.top = (r.bottom + gap) + 'px';
+      } else {
+        menu.style.top = (r.top - gap - h) + 'px';
+      }
     }
     // Tapping the chevron must NOT steal focus from the message box, or the
     // mobile keyboard collapses. preventDefault on pointerdown keeps the
