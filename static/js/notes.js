@@ -826,12 +826,16 @@ function _planTodoRowHtml(row, extraCls = '', badge = '', sourceDay = '') {
   const badgeHtml = badge ? `<span class="notes-plan-badge ${badgeCls}">${_esc(badge)}</span>` : '';
   const stacked = extraCls.includes('notes-plan-row-stack');
   if (stacked) {
+    const dragHandle = extraCls.includes('notes-myweek-draggable')
+      ? '<button type="button" class="notes-myweek-drag-handle" aria-label="Tag verschieben" title="Halten & ziehen">⠿</button>'
+      : '';
     return `<div class="notes-plan-row notes-plan-todo notes-plan-row-stack ${extraCls}" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}${dayAttr}>
       <span class="note-check-dot" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr} title="Erledigt"></span>
       <div class="notes-plan-row-body">
         ${badgeHtml ? `<div class="notes-plan-row-meta">${badgeHtml}</div>` : ''}
         <div class="notes-plan-todo-text">${_linkify(row.text)}</div>
       </div>
+      ${dragHandle}
     </div>`;
   }
   return `<div class="notes-plan-row notes-plan-todo ${extraCls}" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}${dayAttr}>
@@ -2735,6 +2739,8 @@ function _wireMyWeekDragDrop(body) {
       if (e.button !== 0 && e.pointerType === 'mouse') return;
       if (e.target.closest('.note-check-dot')) return;
       if (_myWeekDrag || _myWeekPending) return;
+      const touchUi = window.matchMedia('(max-width: 768px)').matches;
+      if (touchUi && !e.target.closest('.notes-myweek-drag-handle')) return;
 
       const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
       _myWeekDragMoved = false;

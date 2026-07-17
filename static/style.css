@@ -35691,7 +35691,12 @@ body.notes-mobile-mode.notes-drag-mode .note-card-pin.active {
   gap: 0;
   min-height: 0;
   width: 100%;
-  overflow: visible;
+  /* Must stay scrollable — overflow:visible let content clip inside
+     .notes-pane { overflow:hidden } on phones with no way to scroll. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 .notes-pane.notes-pane-planning .notes-plan-wrap {
   flex: 0 0 auto;
@@ -35991,7 +35996,23 @@ body.notes-mobile-mode.notes-drag-mode .note-card-pin.active {
   cursor: grab;
   -webkit-user-select: none;
   user-select: none;
-  touch-action: pan-y;
+}
+.notes-myweek-drag-handle {
+  display: none;
+  flex-shrink: 0;
+  align-self: stretch;
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 45%, transparent);
+  padding: 0 4px 0 8px;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+}
+.notes-myweek-drag-handle:active {
+  cursor: grabbing;
 }
 .notes-myweek-draggable:active {
   cursor: grabbing;
@@ -36029,12 +36050,43 @@ body.notes-myweek-drag-active .notes-pane-body.notes-myweek-drag-scroll-lock {
 }
 
 @media (max-width: 768px) {
+  /* Planning views: force the sheet body to be the one vertical scroller. */
+  body.notes-view .notes-pane.notes-pane-planning .notes-pane-body,
+  body.notes-view .notes-pane.notes-pane-planning .notes-pane-body.notes-planning-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto !important;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    overscroll-behavior-y: contain;
+  }
+  body.notes-view .notes-pane.notes-pane-planning .notes-plan-wrap,
+  body.notes-view .notes-pane.notes-pane-planning .notes-myweek-wrap,
+  body.notes-view .notes-pane.notes-pane-planning .notes-myweek-days {
+    overflow: visible;
+    touch-action: pan-y;
+  }
   /* Let the pane body own vertical scroll on phones — per-day inner
      scrollers trap touch gestures and block reaching later days. */
   .notes-myweek-day .notes-plan-list {
     max-height: none;
     overflow-y: visible;
     overscroll-behavior: auto;
+  }
+  .notes-myweek-day {
+    overflow: visible;
+  }
+  /* Scroll on row text; drag only from grip handle on the right. */
+  .notes-myweek-draggable {
+    touch-action: pan-y;
+  }
+  .notes-myweek-drag-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    touch-action: none;
   }
   /* Tools chevron (overflow menu collapse) — larger touch target on phones. */
   .overflow-plus-btn {
