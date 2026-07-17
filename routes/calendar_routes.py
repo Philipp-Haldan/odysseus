@@ -901,7 +901,7 @@ def setup_calendar_routes() -> APIRouter:
                             pass
         if not (url and user and pw):
             return {"ok": False, "error": "Missing URL, username, or password"}
-        from src.caldav_sync import validate_caldav_url
+        from src.caldav_sync import validate_caldav_url, resolve_caldav_redirect, _CALDAV_MAX_REDIRECTS
         try:
             url = validate_caldav_url(url)
         except ValueError as e:
@@ -914,24 +914,37 @@ def setup_calendar_routes() -> APIRouter:
         )
         try:
             async with httpx.AsyncClient(timeout=8.0, follow_redirects=False, trust_env=False) as cx:
-                r = await cx.request(
-                    "PROPFIND", url,
-                    auth=(user, pw),
-                    headers={"Depth": "0", "Content-Type": "application/xml"},
-                    content=propfind_body,
-                )
-                # If the server demands Digest (Baïkal default, SabreDAV-based
-                # servers, Radicale with htdigest), the Basic attempt above
-                # 401s. Retry once with httpx.DigestAuth so this test matches
-                # what the real sync does via caldav.DAVClient in
-                # src/caldav_sync.py (which negotiates the scheme).
-                if r.status_code == 401 and "digest" in r.headers.get("www-authenticate", "").lower():
+                current = url
+                r = None
+                for _ in range(_CALDAV_MAX_REDIRECTS + 1):
                     r = await cx.request(
-                        "PROPFIND", url,
-                        auth=httpx.DigestAuth(user, pw),
+                        "PROPFIND", current,
+                        auth=(user, pw),
                         headers={"Depth": "0", "Content-Type": "application/xml"},
                         content=propfind_body,
                     )
+                    # If the server demands Digest (Baïkal default, SabreDAV-based
+                    # servers, Radicale with htdigest), the Basic attempt above
+                    # 401s. Retry once with httpx.DigestAuth so this test matches
+                    # what the real sync does via caldav.DAVClient in
+                    # src/caldav_sync.py (which negotiates the scheme).
+                    if r.status_code == 401 and "digest" in r.headers.get("www-authenticate", "").lower():
+                        r = await cx.request(
+                            "PROPFIND", current,
+                            auth=httpx.DigestAuth(user, pw),
+                            headers={"Depth": "0", "Content-Type": "application/xml"},
+                            content=propfind_body,
+                        )
+                    if r.status_code in (301, 302, 303, 307, 308):
+                        location = r.headers.get("location")
+                        if not location:
+                            break
+                        try:
+                            current = resolve_caldav_redirect(str(r.url), location)
+                        except ValueError as e:
+                            return {"ok": False, "error": str(e)}
+                        continue
+                    break
             # 207 = Multi-Status — standard CalDAV success. 200 also
             # acceptable. Anything else (401/403/404/5xx) means trouble.
             if r.status_code in (200, 207):
@@ -943,7 +956,7 @@ def setup_calendar_routes() -> APIRouter:
             if r.status_code == 404:
                 return {"ok": False, "error": "Not found — check the URL path"}
             if 300 <= r.status_code < 400:
-                return {"ok": False, "error": "Redirects are not followed for CalDAV safety; use the final URL"}
+                return {"ok": False, "error": "Too many CalDAV redirects — check the URL"}
             return {"ok": False, "error": f"HTTP {r.status_code}"}
         except httpx.ConnectError as e:
             return {"ok": False, "error": f"Connection refused: {e}"[:200]}

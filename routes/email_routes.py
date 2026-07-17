@@ -5018,9 +5018,12 @@ def setup_email_routes():
 
         imap_host = (body.get("imap_host") or "").strip()
         imap_port, imap_port_err = _coerce_port(body.get("imap_port"), 993)
-        imap_user = (body.get("imap_user") or "").strip()
-        imap_pass = body.get("imap_password") or ""
-        imap_starttls = bool(body.get("imap_starttls"))
+        imap_user = (body.get("imap_user") or body.get("from_address") or "").strip()
+        imap_pass = (body.get("imap_password") or "").replace(" ", "")
+        if body.get("imap_starttls") is None:
+            imap_starttls = imap_port not in (993, 995)
+        else:
+            imap_starttls = bool(body.get("imap_starttls"))
 
         if imap_port_err:
             imap_result = {"ok": False, "error": imap_port_err}
@@ -5057,7 +5060,7 @@ def setup_email_routes():
         elif smtp_host:
             smtp_security = _smtp_security_mode({"smtp_security": body.get("smtp_security"), "smtp_port": smtp_port})
             smtp_user = (body.get("smtp_user") or imap_user).strip()
-            smtp_pass = body.get("smtp_password") or imap_pass
+            smtp_pass = (body.get("smtp_password") or imap_pass).replace(" ", "")
             try:
                 if smtp_security == "ssl":
                     smtp = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=10)

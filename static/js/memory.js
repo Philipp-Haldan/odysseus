@@ -371,7 +371,7 @@ async function syncPrefToggle(elementId, prefKey, onMsg, offMsg, dimBelow = true
 export async function loadMemories() {
   _ensureNewMemoryCategorySelect();
   try {
-    const response = await fetch(`${window.location.origin}/api/memory`);
+    const response = await fetch(`${window.location.origin}/api/memory`, { credentials: 'same-origin' });
 
     if (!response.ok) {
       console.error('Memory fetch failed with status:', response.status);
@@ -475,7 +475,7 @@ async function bulkDelete() {
   const deletedIds = [];
   for (const id of selectedIds) {
     try {
-      const res = await fetch(`${window.location.origin}/api/memory/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${window.location.origin}/api/memory/${id}`, { method: 'DELETE', credentials: 'same-origin' });
       if (res.ok) {
         deleted++;
         deletedIds.push(id);
@@ -517,6 +517,7 @@ export async function tidyMemories() {
   try {
     const res = await fetch(`${window.location.origin}/api/memory/audit`, {
       method: 'POST',
+      credentials: 'same-origin',
     });
 
     if (!res.ok) {
@@ -533,7 +534,7 @@ export async function tidyMemories() {
     }
 
     // Fetch the new state
-    const freshRes = await fetch(`${window.location.origin}/api/memory`);
+    const freshRes = await fetch(`${window.location.origin}/api/memory`, { credentials: 'same-origin' });
     const freshData = await freshRes.json();
     const afterList = freshData.memory || freshData || [];
     const afterMap = new Map(afterList.map(m => [m.id, m]));
@@ -1045,6 +1046,7 @@ async function saveInlineEdit(id, newText, newCategory) {
 
     const response = await fetch(`${window.location.origin}/api/memory/${id}`, {
       method: 'PUT',
+      credentials: 'same-origin',
       body: params
     });
 
@@ -1098,6 +1100,7 @@ export async function addNewMemory() {
   try {
     const response = await fetch(`${window.location.origin}/api/memory/add`, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
       },
@@ -1136,6 +1139,7 @@ async function togglePin(id, pinned) {
   try {
     const res = await fetch(`${window.location.origin}/api/memory/${id}/pin`, {
       method: 'POST',
+      credentials: 'same-origin',
       body: new URLSearchParams({ pinned: pinned.toString() })
     });
     if (res.ok) {
@@ -1158,7 +1162,8 @@ export async function deleteMemory(id) {
 
   try {
     const response = await fetch(`${window.location.origin}/api/memory/${id}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      credentials: 'same-origin',
     });
 
     if (response.ok) {
@@ -1176,6 +1181,7 @@ export async function deleteMemory(id) {
 export async function extractMemory(sessionId) {
   const res = await fetch(`${window.location.origin}/api/memory/extract`, {
     method: 'POST',
+    credentials: 'same-origin',
     body: new URLSearchParams({ session: sessionId })
   });
   if (!res.ok) {
@@ -1227,6 +1233,7 @@ export async function extractMemory(sessionId) {
       btn.addEventListener('click', async () => {
         await fetch(`${window.location.origin}/api/memory/add`, {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: s })
         });
@@ -1295,6 +1302,7 @@ async function handleImportFile(file) {
 
     const res = await fetch(`${window.location.origin}/api/memory/import`, {
       method: 'POST',
+      credentials: 'same-origin',
       body: formData
     });
 
@@ -1355,6 +1363,7 @@ async function handleImportFile(file) {
           try {
             await fetch(`${window.location.origin}/api/memory/add`, {
               method: 'POST',
+              credentials: 'same-origin',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ text: s.text, category: s.category })
             });
@@ -1397,6 +1406,7 @@ async function handleImportFile(file) {
         btn.addEventListener('click', async () => {
           await fetch(`${window.location.origin}/api/memory/add`, {
             method: 'POST',
+            credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: item.text, category: item.category })
           });

@@ -31,7 +31,7 @@ import os
 import socket
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,10 @@ _BLOCKED_HOSTS = {
     "ip6-localhost",
     "metadata.google.internal",
 }
+# iCloud (and some other providers) redirect from the well-known entry host to
+# a per-account partition (e.g. p42-caldav.icloud.com). Follow a few redirects
+# only after re-validating each target host (SSRF guard).
+_CALDAV_MAX_REDIRECTS = 5
 
 
 def _private_caldav_allowed() -> bool:
@@ -127,6 +131,26 @@ def validate_caldav_url(raw_url: str) -> str:
     _validate_caldav_ip(host)
     _validate_caldav_hostname(host)
     return urlunparse(parsed._replace(fragment="")).rstrip("/")
+
+
+def resolve_caldav_redirect(current_url: str, location: str) -> str:
+    """Resolve a CalDAV redirect Location header and vet the target host."""
+    target = urljoin(current_url, location)
+    return validate_caldav_url(target)
+
+
+def _patch_session_for_safe_caldav_redirects(session) -> None:
+    """Follow redirects only to hosts that pass ``validate_caldav_url``."""
+    _orig_get_redirect_target = session.get_redirect_target
+
+    def _safe_get_redirect_target(resp):
+        target = _orig_get_redirect_target(resp)
+        if target:
+            validate_caldav_url(target)
+        return target
+
+    session.get_redirect_target = _safe_get_redirect_target
+    session.max_redirects = _CALDAV_MAX_REDIRECTS
 
 
 def _event_etag(obj) -> str:
@@ -229,28 +253,18 @@ def _open_url_as_calendar(client, url: str):
 
 
 def _build_dav_client(url: str, username: str, password: str):
-    """Construct a CalDAV client with automatic redirects disabled.
+    """Construct a CalDAV client with SSRF-safe redirect handling.
 
     ``validate_caldav_url`` resolves and vets the *initial* host, but caldav's
-    underlying HTTP session follows 3xx redirects by default. So a URL that
-    passes validation can still be redirected — at request time — to
-    loopback / link-local / private space, re-opening the SSRF the host check
-    closes. Pin the session to zero redirects: any 3xx then raises instead of
-    silently following an attacker-chosen ``Location``. This mirrors the
-    test-connection path in ``routes/calendar_routes.py``, which already sets
-    ``follow_redirects=False``.
-
-    DAVClient exposes no per-request redirect flag, so we set it on the session
-    after construction (the session is created in ``__init__``).
+    underlying HTTP session follows 3xx redirects by default. A URL that passes
+    validation can still be redirected — at request time — to loopback / private
+    space unless each hop is re-checked. We allow a small redirect budget (for
+    iCloud partition hosts) and validate every ``Location`` before following it.
     """
     import caldav
 
     client = caldav.DAVClient(url=url, username=username, password=password)
-    # Unconditional: a redirect-disable that only sometimes applies is not a
-    # control. The session exists right after __init__ on every real client;
-    # test_build_dav_client_disables_redirects asserts it against installed
-    # caldav in CI.
-    client.session.max_redirects = 0
+    _patch_session_for_safe_caldav_redirects(client.session)
     return client
 
 

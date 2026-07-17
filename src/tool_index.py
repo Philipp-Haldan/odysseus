@@ -37,6 +37,11 @@ ALWAYS_AVAILABLE = frozenset({
     # of topic. Without this, RAG drops it and the agent falls back to
     # app_api /api/memory/add which fails with 422 on first attempt.
     "manage_memory",
+    # Notes/calendar/ui are core productivity — RAG often misses them for
+    # German queries ("Notizen", "Erinnerung") or image-only turns.
+    "manage_notes",
+    "manage_calendar",
+    "ui_control",
     # Ask the user a multiple-choice question for a decision/clarification.
     # Always reachable so the agent can pause and ask at any point.
     "ask_user",
@@ -356,8 +361,12 @@ class ToolIndex:
                    "check on that job", "job output", "kill the job",
                    "kill the background", "stop the background", "running job"}):
             {"manage_bg_jobs"},
-        frozenset({"note", "todo", "reminder", "remind", "checklist", "remember to"}):
+        frozenset({"note", "notes", "notiz", "notizen", "todo", "todos", "aufgabe",
+                   "aufgaben", "erinnerung", "erinnern", "reminder", "remind",
+                   "checklist", "remember to"}):
             {"manage_notes"},
+        frozenset({"kalender", "termin", "termine", "treffen", "veranstaltung"}):
+            {"manage_calendar"},
         # Chat/session management. "rename" alone maps to documents below, so a
         # request like "rename the last 12 sessions/chats" needs these session
         # keywords to surface the right tools (NOT app_api — /api/sessions is
