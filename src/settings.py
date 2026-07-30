@@ -140,6 +140,9 @@ DEFAULT_SETTINGS = {
     # Email replies use email_writing_style instead because greetings,
     # signatures, and mailbox identity rules are medium-specific.
     "document_writing_style": "",
+    # When set (e.g. "German (de-DE)"), injected into agent/chat system
+    # prompts so replies stay in that language unless the user asks otherwise.
+    "response_language": "",
     # Ordered fallback chain for the default chat model. Each entry is
     # {"endpoint_id": "...", "model": "..."}. If the primary model fails
     # before producing output (endpoint offline / errors), the chat

@@ -2014,6 +2014,17 @@ def _build_system_prompt(
         except Exception as _mcp_err:
             logger.debug(f"MCP description injection skipped: {_mcp_err}")
 
+    try:
+        from src.settings import load_settings as _load_settings_lang
+        _resp_lang = (_load_settings_lang().get("response_language") or "").strip()
+        if _resp_lang:
+            agent_prompt += (
+                f"\n\nLANGUAGE: Always respond to the user in {_resp_lang} "
+                "unless they explicitly request another language."
+            )
+    except Exception:
+        pass
+
     agent_msg = {"role": "system", "content": agent_prompt}
     insert_idx = 0
     for i, msg in enumerate(messages):
