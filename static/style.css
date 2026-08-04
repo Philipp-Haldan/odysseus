@@ -35855,6 +35855,15 @@ body.notes-mobile-mode.notes-drag-mode .note-card-pin.active {
   color: var(--blue, #4a9eff);
   border: 1px solid color-mix(in srgb, var(--blue, #4a9eff) 35%, transparent);
 }
+.notes-plan-badge-overdue {
+  background: color-mix(in srgb, var(--red) 18%, transparent);
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
+}
+.notes-plan-row-overdue {
+  border-color: color-mix(in srgb, var(--red) 40%, var(--border));
+  background: color-mix(in srgb, var(--red) 6%, var(--panel, var(--bg)));
+}
 .notes-plan-event-time {
   flex-shrink: 0;
   width: 76px;

@@ -736,20 +736,34 @@ function _isWeekPlanNote(note) {
   return _noteTags(note).some(t => t.toLowerCase() === WEEK_PLAN_LABEL);
 }
 
-function _collectWeekPlanRowsForDay(dayStr) {
+function _collectWeekPlanRowsForDay(dayStr, includeOverdue = false) {
   const rows = [];
+  const today = _myDayTodayStr();
   for (const note of _notes) {
     if (!_isWeekPlanNote(note) || _isNoteFullyDone(note)) continue;
-    if (_noteDueDateStr(note) !== dayStr) continue;
+    const due = _noteDueDateStr(note);
+    // A week-plan item normally shows only on its exact day. In "Mein Tag"
+    // (includeOverdue) an unchecked item whose day is already past is carried
+    // into today and flagged `overdue`, so it stays visible until ticked off
+    // instead of silently vanishing once its day is over. The weekly planner
+    // keeps the strict per-day view (includeOverdue stays false there).
+    let overdue = false;
+    if (due !== dayStr) {
+      if (includeOverdue && dayStr === today && _isDueOverdue(note.due_date)) {
+        overdue = true;
+      } else {
+        continue;
+      }
+    }
     if (_hasItems(note) && Array.isArray(note.items) && note.items.length > 0) {
       note.items.forEach((item, idx) => {
         if (!item.done && (item.text || '').trim()) {
-          rows.push({ note, idx, text: item.text.trim(), kind: 'item' });
+          rows.push({ note, idx, text: item.text.trim(), kind: 'item', overdue, dueDate: due });
         }
       });
     } else {
       const text = (note.title || note.content || '').trim();
-      if (text) rows.push({ note, idx: null, text, kind: 'note' });
+      if (text) rows.push({ note, idx: null, text, kind: 'note', overdue, dueDate: due });
     }
   }
   return rows;
@@ -818,28 +832,41 @@ function _dueDateForTargetDay(currentDue, targetDayStr) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+function _shortDueLabel(dateStr) {
+  const s = (dateStr || '').slice(0, 10);
+  if (s.length !== 10) return '';
+  const [, m, d] = s.split('-');
+  return `${parseInt(d, 10)}.${parseInt(m, 10)}.`;
+}
+
 function _planTodoRowHtml(row, extraCls = '', badge = '', sourceDay = '') {
   const idxAttr = row.idx == null ? '' : ` data-idx="${row.idx}"`;
   const kindAttr = ` data-kind="${row.kind}"`;
   const dayAttr = sourceDay ? ` data-source-day="${_esc(sourceDay)}"` : '';
   const badgeCls = badge === 'Woche' ? 'notes-plan-badge-week' : badge ? 'notes-plan-badge-todo' : '';
   const badgeHtml = badge ? `<span class="notes-plan-badge ${badgeCls}">${_esc(badge)}</span>` : '';
+  // Carried-over (past-day) to-dos get a red "Überfällig" badge + row accent so
+  // they read clearly apart from today's items in Mein Tag.
+  const overdueHtml = row.overdue
+    ? `<span class="notes-plan-badge notes-plan-badge-overdue" title="Überfällig${row.dueDate ? ' seit ' + _esc(_shortDueLabel(row.dueDate)) : ''}">Überfällig${row.dueDate ? ` · ${_esc(_shortDueLabel(row.dueDate))}` : ''}</span>`
+    : '';
+  const overdueRowCls = row.overdue ? ' notes-plan-row-overdue' : '';
   const stacked = extraCls.includes('notes-plan-row-stack');
   if (stacked) {
     const dragHandle = extraCls.includes('notes-myweek-draggable')
       ? '<button type="button" class="notes-myweek-drag-handle" aria-label="Tag verschieben" title="Halten & ziehen">⠿</button>'
       : '';
-    return `<div class="notes-plan-row notes-plan-todo notes-plan-row-stack ${extraCls}" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}${dayAttr}>
+    return `<div class="notes-plan-row notes-plan-todo notes-plan-row-stack ${extraCls}${overdueRowCls}" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}${dayAttr}>
       <span class="note-check-dot" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr} title="Erledigt"></span>
       <div class="notes-plan-row-body">
-        ${badgeHtml ? `<div class="notes-plan-row-meta">${badgeHtml}</div>` : ''}
+        ${(badgeHtml || overdueHtml) ? `<div class="notes-plan-row-meta">${badgeHtml}${overdueHtml}</div>` : ''}
         <div class="notes-plan-todo-text">${_linkify(row.text)}</div>
       </div>
       ${dragHandle}
     </div>`;
   }
-  return `<div class="notes-plan-row notes-plan-todo ${extraCls}" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}${dayAttr}>
-    ${badgeHtml}
+  return `<div class="notes-plan-row notes-plan-todo ${extraCls}${overdueRowCls}" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}${dayAttr}>
+    ${badgeHtml}${overdueHtml}
     <span class="note-check-dot" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr} title="Erledigt"></span>
     <span class="notes-plan-todo-text">${_linkify(row.text)}</span>
   </div>`;
@@ -2403,7 +2430,7 @@ async function _renderMyDayView(body) {
   const events = _eventsOnDay(await _fetchEventsForRange(today, _dateStr(tomorrow)), today);
   if (token !== _mydayRenderToken) return;
 
-  const weekRows = _collectWeekPlanRowsForDay(today);
+  const weekRows = _collectWeekPlanRowsForDay(today, true);
   const todoRows = _collectMyDayTodoRows();
   body.querySelector('.notes-plan-loading')?.remove();
 
