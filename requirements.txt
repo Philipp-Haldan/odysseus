@@ -38,7 +38,11 @@ python-dateutil
 caldav
 cryptography
 bcrypt
-mcp
+# Pinned to 1.x: mcp 2.0 dropped the decorator API (`@server.list_tools()` /
+# `@server.call_tool()`) that mcp_servers/*.py are built on, so an unpinned
+# rebuild silently breaks the built-in Memory/RAG/Email/Image servers at
+# import time. Lift the cap only together with porting those four servers.
+mcp<2
 pyotp
 qrcode[pil]
 croniter
