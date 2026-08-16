@@ -1664,7 +1664,13 @@ async def action_ping_notes(owner: str, **kwargs) -> Tuple[str, bool]:
         REPING_MIN = 25     # don't re-ping same note more often than this
 
         def _parse_due(s: str):
-            """Accept '2026-05-29T16:31' (local) or '...Z' (UTC). Returns UTC datetime."""
+            """Accept '2026-05-29T16:31' (local) or '...Z' (UTC). Returns UTC datetime.
+
+            Non-ISO strings fall through to the calendar's natural-language
+            parser instead of being dropped. Agents routinely emit '30.10.2026'
+            or 'tomorrow 9am' for due_date; returning None for those stored the
+            reminder but never fired it — a silent no-op with no log line.
+            """
             if not s:
                 return None
             try:
@@ -1675,6 +1681,16 @@ async def action_ping_notes(owner: str, **kwargs) -> Tuple[str, bool]:
                 d = _dt.fromisoformat(s)
                 if d.tzinfo is None:
                     d = d.astimezone().astimezone(_tz.utc)
+                return d.astimezone(_tz.utc)
+            except Exception:
+                pass
+            try:
+                # Deferred import: routes/ imports src/, so this must not run
+                # at module import time.
+                from routes.calendar_routes import _parse_dt as _cal_parse
+                d = _cal_parse(s)          # naive local, or raises ValueError
+                if d.tzinfo is None:
+                    d = d.astimezone()
                 return d.astimezone(_tz.utc)
             except Exception:
                 return None

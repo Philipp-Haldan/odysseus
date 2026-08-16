@@ -499,6 +499,51 @@ def _parse_dt(s: str) -> datetime:
     if t is not None:
         return today.replace(hour=t[0], minute=t[1])
 
+    # Dotted day-first dates (30.10.2026, 7.11.2026 14:00). Handled before
+    # dateutil because it reads an ambiguous "10.11.2026" month-first and
+    # would silently land on the wrong day for a de-DE user. No locale uses
+    # dots for month-first, so day-first is unambiguous here.
+    m = _re.match(r'^(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})(?:\s+(.*))?$', lower)
+    if m:
+        day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        rest = (m.group(4) or "").strip()
+        try:
+            base = datetime(year, month, day)
+        except ValueError:
+            base = None
+        if base is not None:
+            if not rest:
+                return base
+            t = _parse_time(rest)
+            if t is not None:
+                return base.replace(hour=t[0], minute=t[1])
+            return base
+
+    # German long-form dates ("30. Oktober 2026", "7 Nov 2026"). dateutil is
+    # English-only and rejects these outright, so a de-DE agent's due_date
+    # would otherwise be dropped.
+    _DE_MONTHS = {
+        "januar": 1, "jan": 1, "februar": 2, "feb": 2, "märz": 3, "maerz": 3,
+        "mrz": 3, "april": 4, "apr": 4, "mai": 5, "juni": 6, "jun": 6,
+        "juli": 7, "jul": 7, "august": 8, "aug": 8, "september": 9, "sep": 9,
+        "sept": 9, "oktober": 10, "okt": 10, "november": 11, "nov": 11,
+        "dezember": 12, "dez": 12,
+    }
+    m = _re.match(r'^(\d{1,2})\.?\s+([a-zäöü]+)\.?\s+(\d{4})(?:\s+(.*))?$', lower)
+    if m and m.group(2) in _DE_MONTHS:
+        day, year = int(m.group(1)), int(m.group(3))
+        rest = (m.group(4) or "").strip()
+        try:
+            base = datetime(year, _DE_MONTHS[m.group(2)], day)
+        except ValueError:
+            base = None
+        if base is not None:
+            if rest:
+                t = _parse_time(rest)
+                if t is not None:
+                    return base.replace(hour=t[0], minute=t[1])
+            return base
+
     # Last resort: dateutil's fuzzy parser
     try:
         from dateutil import parser as _du
