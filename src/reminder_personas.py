@@ -58,12 +58,15 @@ _DEFAULT_SYNTHESIS_TONE = (
 )
 
 
-def synthesis_system_prompt(persona_id: str) -> str:
+def synthesis_system_prompt(persona_id: str, response_language: str = "") -> str:
     """Return the system prompt for reminder synthesis given a persona id.
 
     Falls back to the warm-neutral baseline when the id is empty, unknown,
     or refers to a custom (client-only) character we don't have on file.
     """
+    lang = (response_language or "").strip()
+    lang_suffix = f" Write the reminder in {lang}." if lang else ""
+
     persona = (persona_id or "").strip().lower()
     persona_prompt = PERSONAS.get(persona)
     if persona_prompt:
@@ -74,5 +77,6 @@ def synthesis_system_prompt(persona_id: str) -> str:
             + "\n\n"
             + "You are now writing a single one-line reminder for the user. "
               "Keep it under 18 words and in the voice above."
+            + lang_suffix
         )
-    return _DEFAULT_SYNTHESIS_TONE
+    return _DEFAULT_SYNTHESIS_TONE + lang_suffix

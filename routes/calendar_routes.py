@@ -499,6 +499,51 @@ def _parse_dt(s: str) -> datetime:
     if t is not None:
         return today.replace(hour=t[0], minute=t[1])
 
+    # Dotted day-first dates (30.10.2026, 7.11.2026 14:00). Handled before
+    # dateutil because it reads an ambiguous "10.11.2026" month-first and
+    # would silently land on the wrong day for a de-DE user. No locale uses
+    # dots for month-first, so day-first is unambiguous here.
+    m = _re.match(r'^(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})(?:\s+(.*))?$', lower)
+    if m:
+        day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        rest = (m.group(4) or "").strip()
+        try:
+            base = datetime(year, month, day)
+        except ValueError:
+            base = None
+        if base is not None:
+            if not rest:
+                return base
+            t = _parse_time(rest)
+            if t is not None:
+                return base.replace(hour=t[0], minute=t[1])
+            return base
+
+    # German long-form dates ("30. Oktober 2026", "7 Nov 2026"). dateutil is
+    # English-only and rejects these outright, so a de-DE agent's due_date
+    # would otherwise be dropped.
+    _DE_MONTHS = {
+        "januar": 1, "jan": 1, "februar": 2, "feb": 2, "märz": 3, "maerz": 3,
+        "mrz": 3, "april": 4, "apr": 4, "mai": 5, "juni": 6, "jun": 6,
+        "juli": 7, "jul": 7, "august": 8, "aug": 8, "september": 9, "sep": 9,
+        "sept": 9, "oktober": 10, "okt": 10, "november": 11, "nov": 11,
+        "dezember": 12, "dez": 12,
+    }
+    m = _re.match(r'^(\d{1,2})\.?\s+([a-zäöü]+)\.?\s+(\d{4})(?:\s+(.*))?$', lower)
+    if m and m.group(2) in _DE_MONTHS:
+        day, year = int(m.group(1)), int(m.group(3))
+        rest = (m.group(4) or "").strip()
+        try:
+            base = datetime(year, _DE_MONTHS[m.group(2)], day)
+        except ValueError:
+            base = None
+        if base is not None:
+            if rest:
+                t = _parse_time(rest)
+                if t is not None:
+                    return base.replace(hour=t[0], minute=t[1])
+            return base
+
     # Last resort: dateutil's fuzzy parser
     try:
         from dateutil import parser as _du
@@ -911,7 +956,7 @@ def setup_calendar_routes(upload_handler=None) -> APIRouter:
                             pass
         if not (url and user and pw):
             return {"ok": False, "error": "Missing URL, username, or password"}
-        from src.caldav_sync import validate_caldav_url
+        from src.caldav_sync import validate_caldav_url, resolve_caldav_redirect, _CALDAV_MAX_REDIRECTS
         try:
             url = validate_caldav_url(url)
         except ValueError as e:
@@ -941,24 +986,37 @@ def setup_calendar_routes(upload_handler=None) -> APIRouter:
                 else:
                     logger.warning("CalDAV test: CA bundle %s not found, using system CAs", _ca_bundle)
             async with httpx.AsyncClient(timeout=8.0, follow_redirects=False, trust_env=False, verify=_ssl_ctx) as cx:
-                r = await cx.request(
-                    "PROPFIND", url,
-                    auth=(user, pw),
-                    headers={"Depth": "0", "Content-Type": "application/xml"},
-                    content=propfind_body,
-                )
-                # If the server demands Digest (Baïkal default, SabreDAV-based
-                # servers, Radicale with htdigest), the Basic attempt above
-                # 401s. Retry once with httpx.DigestAuth so this test matches
-                # what the real sync does via caldav.DAVClient in
-                # src/caldav_sync.py (which negotiates the scheme).
-                if r.status_code == 401 and "digest" in r.headers.get("www-authenticate", "").lower():
+                current = url
+                r = None
+                for _ in range(_CALDAV_MAX_REDIRECTS + 1):
                     r = await cx.request(
-                        "PROPFIND", url,
-                        auth=httpx.DigestAuth(user, pw),
+                        "PROPFIND", current,
+                        auth=(user, pw),
                         headers={"Depth": "0", "Content-Type": "application/xml"},
                         content=propfind_body,
                     )
+                    # If the server demands Digest (Baïkal default, SabreDAV-based
+                    # servers, Radicale with htdigest), the Basic attempt above
+                    # 401s. Retry once with httpx.DigestAuth so this test matches
+                    # what the real sync does via caldav.DAVClient in
+                    # src/caldav_sync.py (which negotiates the scheme).
+                    if r.status_code == 401 and "digest" in r.headers.get("www-authenticate", "").lower():
+                        r = await cx.request(
+                            "PROPFIND", current,
+                            auth=httpx.DigestAuth(user, pw),
+                            headers={"Depth": "0", "Content-Type": "application/xml"},
+                            content=propfind_body,
+                        )
+                    if r.status_code in (301, 302, 303, 307, 308):
+                        location = r.headers.get("location")
+                        if not location:
+                            break
+                        try:
+                            current = resolve_caldav_redirect(str(r.url), location)
+                        except ValueError as e:
+                            return {"ok": False, "error": str(e)}
+                        continue
+                    break
             # 207 = Multi-Status — standard CalDAV success. 200 also
             # acceptable. Anything else (401/403/404/5xx) means trouble.
             if r.status_code in (200, 207):
@@ -970,7 +1028,7 @@ def setup_calendar_routes(upload_handler=None) -> APIRouter:
             if r.status_code == 404:
                 return {"ok": False, "error": "Not found — check the URL path"}
             if 300 <= r.status_code < 400:
-                return {"ok": False, "error": "Redirects are not followed for CalDAV safety; use the final URL"}
+                return {"ok": False, "error": "Too many CalDAV redirects — check the URL"}
             return {"ok": False, "error": f"HTTP {r.status_code}"}
         except httpx.ConnectError as e:
             return {"ok": False, "error": f"Connection refused: {e}"[:200]}

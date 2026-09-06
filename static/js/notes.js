@@ -12,6 +12,7 @@ import { snapModalToZone } from './tileManager.js';
 import { applyEdgeDock, clearDockSide } from './modalSnap.js';
 import { topToolWindowZ, topPortalZ } from './toolWindowZOrder.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
+import { fmtTime24 } from './calendar/utils.js';
 
 const API_BASE = window.location.origin;
 let _open = false;
@@ -19,7 +20,7 @@ let _notes = [];
 let _editingId = null;
 let _selectedIds = new Set();
 let _activeLabel = null;
-let _activeFilter = null; // null | 'default' | 'reminders' | 'no-reminders'
+let _activeFilter = null; // null | 'default' | 'reminders' | 'no-reminders' | 'today' | 'goals' | 'myday' | 'myweek'
 // Cycle order for the Reminders chip: each click on it advances reminders →
 // null → no-reminders → null → reminders → ... This var tracks which non-null
 // state the next click should land on after passing through null.
@@ -48,6 +49,11 @@ const REMINDER_ACTIVE_HIGHLIGHT_KEY = 'odysseus-notes-reminder-active-highlight'
 // the rail "fired" badge so old reminders don't re-fire on every page reload.
 const REMINDER_DISMISSED_AT_KEY = 'odysseus-notes-reminder-dismissed-at';
 const NOTES_FIRST_OPEN_HINT_KEY = 'odysseus-notes-first-open-hint-v1';
+const NOTES_FILTER_KEY = 'odysseus-notes-active-filter';
+const NOTES_MYDAY_INTRO_KEY = 'odysseus-notes-myday-v1';
+let _mydayRenderToken = 0;
+let _myweekRenderToken = 0;
+const WEEK_PLAN_LABEL = 'woche';
 
 function _forceCloseNotesPanel() {
   _open = false;
@@ -573,7 +579,7 @@ function _formatDueDate(dateStr) {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const due = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const diffDays = Math.round((due - today) / 86400000);
-  const timeStr = hasTime ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+  const timeStr = hasTime ? fmtTime24(d) : '';
   if (hasTime && d < now) return 'overdue';
   if (!hasTime && diffDays < 0) return 'overdue';
   if (diffDays === 0) return hasTime ? timeStr : 'today';
@@ -597,6 +603,363 @@ function _isDueTodayOrOverdue(dateStr) {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const due = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   return due <= today;
+}
+
+function _dateStr(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function _myDayTodayStr() {
+  return _dateStr(new Date());
+}
+
+function _localDateOfIso(dtstart) {
+  if (!dtstart) return '';
+  if (dtstart.length === 10) return dtstart;
+  const d = new Date(dtstart);
+  if (isNaN(d)) return '';
+  return _dateStr(d);
+}
+
+function _isDailyTodoNote(note) {
+  if (!note || note.archived || note.note_type === 'goal' || note.note_type === 'draw') return false;
+  if (_isWeekPlanNote(note)) return false;
+  if (note.note_type === 'todo' || note.note_type === 'checklist') return true;
+  const lbl = (note.label || '').toLowerCase();
+  return lbl === 'todo' || lbl.includes('todo');
+}
+
+function _isOpenTodoForMyDay(note) {
+  if (!_isDailyTodoNote(note) || _isNoteFullyDone(note)) return false;
+  if (!note.due_date) return true;
+  return _isDueTodayOrOverdue(note.due_date);
+}
+
+function _collectMyDayTodoRows() {
+  const rows = [];
+  for (const note of _notes) {
+    if (!_isOpenTodoForMyDay(note)) continue;
+    if (_hasItems(note) && Array.isArray(note.items) && note.items.length > 0) {
+      note.items.forEach((item, idx) => {
+        if (!item.done && (item.text || '').trim()) {
+          rows.push({ note, idx, text: item.text.trim(), kind: 'item' });
+        }
+      });
+    } else {
+      const text = (note.title || note.content || '').trim();
+      if (text) rows.push({ note, idx: null, text, kind: 'note' });
+    }
+  }
+  return rows;
+}
+
+function _myDayTodoCount() {
+  return _collectMyDayTodoRows().length;
+}
+
+function _fmtMyDayTime(dtstart, allDay, dtend) {
+  if (allDay) return 'Ganztägig';
+  const d = new Date(dtstart);
+  if (isNaN(d)) return '';
+  const t0 = fmtTime24(d);
+  if (dtend) {
+    const end = new Date(dtend);
+    if (!isNaN(end)) {
+      const t1 = fmtTime24(end);
+      return `${t0} – ${t1}`;
+    }
+  }
+  return t0;
+}
+
+async function _fetchEventsForRange(start, end) {
+  try {
+    const res = await fetch(`${API_BASE}/api/calendar/events?start=${start}&end=${end}`, { credentials: 'same-origin' });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.events || []).sort((a, b) => (a.dtstart || '').localeCompare(b.dtstart || ''));
+  } catch {
+    return [];
+  }
+}
+
+function _eventsOnDay(events, dayStr) {
+  return events.filter(ev => {
+    if (ev.all_day) {
+      if (ev.dtstart === ev.dtend) return ev.dtstart === dayStr;
+      return ev.dtstart <= dayStr && ev.dtend > dayStr;
+    }
+    return _localDateOfIso(ev.dtstart) === dayStr;
+  });
+}
+
+async function _fetchTodayEvents() {
+  const today = _myDayTodayStr();
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const events = await _fetchEventsForRange(today, _dateStr(tomorrow));
+  return _eventsOnDay(events, today);
+}
+
+function _weekDayDates() {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const today = _myDayTodayStr();
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const dateStr = _dateStr(d);
+    days.push({
+      dateStr,
+      weekday: d.toLocaleDateString('de-DE', { weekday: 'short' }),
+      dayNum: d.getDate(),
+      month: d.toLocaleDateString('de-DE', { month: 'short' }),
+      isToday: dateStr === today,
+    });
+  }
+  return days;
+}
+
+function _noteDueDateStr(note) {
+  if (!note?.due_date) return '';
+  if (note.due_date.length === 10) return note.due_date;
+  const d = new Date(note.due_date);
+  return isNaN(d) ? '' : _dateStr(d);
+}
+
+function _isWeekPlanNote(note) {
+  if (!note || note.archived) return false;
+  const lbl = (note.label || '').toLowerCase();
+  if (lbl.includes(WEEK_PLAN_LABEL)) return true;
+  return _noteTags(note).some(t => t.toLowerCase() === WEEK_PLAN_LABEL);
+}
+
+function _collectWeekPlanRowsForDay(dayStr, includeOverdue = false) {
+  const rows = [];
+  const today = _myDayTodayStr();
+  for (const note of _notes) {
+    if (!_isWeekPlanNote(note) || _isNoteFullyDone(note)) continue;
+    const due = _noteDueDateStr(note);
+    // A week-plan item normally shows only on its exact day. In "Mein Tag"
+    // (includeOverdue) an unchecked item whose day is already past is carried
+    // into today and flagged `overdue`, so it stays visible until ticked off
+    // instead of silently vanishing once its day is over. The weekly planner
+    // keeps the strict per-day view (includeOverdue stays false there).
+    let overdue = false;
+    if (due !== dayStr) {
+      if (includeOverdue && dayStr === today && _isDueOverdue(note.due_date)) {
+        overdue = true;
+      } else {
+        continue;
+      }
+    }
+    if (_hasItems(note) && Array.isArray(note.items) && note.items.length > 0) {
+      note.items.forEach((item, idx) => {
+        if (!item.done && (item.text || '').trim()) {
+          rows.push({ note, idx, text: item.text.trim(), kind: 'item', overdue, dueDate: due });
+        }
+      });
+    } else {
+      const text = (note.title || note.content || '').trim();
+      if (text) rows.push({ note, idx: null, text, kind: 'note', overdue, dueDate: due });
+    }
+  }
+  return rows;
+}
+
+function _isDatedPlanItem(note) {
+  if (!note || note.archived || _isNoteFullyDone(note) || _isWeekPlanNote(note)) return false;
+  if (_isDailyTodoNote(note)) return true;
+  return !!(note.due_date && note.note_type !== 'goal' && note.note_type !== 'draw');
+}
+
+function _noteMatchesWeekDay(note, dayStr) {
+  if (!note?.due_date) return false;
+  const due = _noteDueDateStr(note);
+  if (due === dayStr) return true;
+  if (dayStr === _myDayTodayStr() && _isDueOverdue(note.due_date)) return true;
+  return false;
+}
+
+function _collectDueTodoRowsForDay(dayStr) {
+  const rows = [];
+  for (const note of _notes) {
+    if (!_isDatedPlanItem(note) || !_noteMatchesWeekDay(note, dayStr)) continue;
+    if (_hasItems(note) && Array.isArray(note.items) && note.items.length > 0) {
+      note.items.forEach((item, idx) => {
+        if (!item.done && (item.text || '').trim()) {
+          rows.push({ note, idx, text: item.text.trim(), kind: 'item' });
+        }
+      });
+    } else {
+      const text = (note.title || note.content || '').trim();
+      if (text) rows.push({ note, idx: null, text, kind: 'note' });
+    }
+  }
+  return rows;
+}
+
+function _calEventRowHtml(ev, extraCls = '') {
+  const time = _fmtMyDayTime(ev.dtstart, ev.all_day, ev.dtend);
+  const stacked = extraCls.includes('notes-plan-row-stack');
+  if (stacked) {
+    return `<div class="notes-plan-row notes-plan-event notes-plan-row-stack ${extraCls}" data-event-uid="${_esc(ev.uid)}" data-event-start="${_esc(ev.dtstart || '')}" title="Im Kalender öffnen">
+      <div class="notes-plan-row-meta">
+        <span class="notes-plan-badge notes-plan-badge-cal">Kalender</span>
+        <span class="notes-plan-event-time">${_esc(time)}</span>
+      </div>
+      <div class="notes-plan-event-name">${_esc(ev.summary || '(Ohne Titel)')}</div>
+    </div>`;
+  }
+  return `<div class="notes-plan-row notes-plan-event ${extraCls}" data-event-uid="${_esc(ev.uid)}" data-event-start="${_esc(ev.dtstart || '')}" title="Im Kalender öffnen">
+    <span class="notes-plan-badge notes-plan-badge-cal">Kalender</span>
+    <span class="notes-plan-event-time">${_esc(time)}</span>
+    <span class="notes-plan-event-name">${_esc(ev.summary || '(Ohne Titel)')}</span>
+  </div>`;
+}
+
+function _dueDateForTargetDay(currentDue, targetDayStr) {
+  if (!currentDue || !_hasTimeComponent(currentDue)) return targetDayStr;
+  const d = new Date(currentDue);
+  if (isNaN(d)) return targetDayStr;
+  const parts = targetDayStr.split('-').map(Number);
+  if (parts.length !== 3) return targetDayStr;
+  d.setFullYear(parts[0], parts[1] - 1, parts[2]);
+  if (currentDue.endsWith('Z')) return d.toISOString();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function _shortDueLabel(dateStr) {
+  const s = (dateStr || '').slice(0, 10);
+  if (s.length !== 10) return '';
+  const [, m, d] = s.split('-');
+  return `${parseInt(d, 10)}.${parseInt(m, 10)}.`;
+}
+
+function _planTodoRowHtml(row, extraCls = '', badge = '', sourceDay = '') {
+  const idxAttr = row.idx == null ? '' : ` data-idx="${row.idx}"`;
+  const kindAttr = ` data-kind="${row.kind}"`;
+  const dayAttr = sourceDay ? ` data-source-day="${_esc(sourceDay)}"` : '';
+  const badgeCls = badge === 'Woche' ? 'notes-plan-badge-week' : badge ? 'notes-plan-badge-todo' : '';
+  const badgeHtml = badge ? `<span class="notes-plan-badge ${badgeCls}">${_esc(badge)}</span>` : '';
+  // Carried-over (past-day) to-dos get a red "Überfällig" badge + row accent so
+  // they read clearly apart from today's items in Mein Tag.
+  const overdueHtml = row.overdue
+    ? `<span class="notes-plan-badge notes-plan-badge-overdue" title="Überfällig${row.dueDate ? ' seit ' + _esc(_shortDueLabel(row.dueDate)) : ''}">Überfällig${row.dueDate ? ` · ${_esc(_shortDueLabel(row.dueDate))}` : ''}</span>`
+    : '';
+  const overdueRowCls = row.overdue ? ' notes-plan-row-overdue' : '';
+  const stacked = extraCls.includes('notes-plan-row-stack');
+  if (stacked) {
+    const dragHandle = extraCls.includes('notes-myweek-draggable')
+      ? '<button type="button" class="notes-myweek-drag-handle" aria-label="Tag verschieben" title="Halten & ziehen">⠿</button>'
+      : '';
+    return `<div class="notes-plan-row notes-plan-todo notes-plan-row-stack ${extraCls}${overdueRowCls}" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}${dayAttr}>
+      <span class="note-check-dot" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr} title="Erledigt"></span>
+      <div class="notes-plan-row-body">
+        ${(badgeHtml || overdueHtml) ? `<div class="notes-plan-row-meta">${badgeHtml}${overdueHtml}</div>` : ''}
+        <div class="notes-plan-todo-text">${_linkify(row.text)}</div>
+      </div>
+      ${dragHandle}
+    </div>`;
+  }
+  return `<div class="notes-plan-row notes-plan-todo ${extraCls}${overdueRowCls}" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr}${dayAttr}>
+    ${badgeHtml}${overdueHtml}
+    <span class="note-check-dot" data-note-id="${_esc(row.note.id)}"${idxAttr}${kindAttr} title="Erledigt"></span>
+    <span class="notes-plan-todo-text">${_linkify(row.text)}</span>
+  </div>`;
+}
+
+async function _createWeekPlanItem(dayStr, text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return;
+  await _saveNote({
+    title: trimmed,
+    note_type: 'todo',
+    label: WEEK_PLAN_LABEL,
+    due_date: dayStr,
+  });
+  await _fetchNotes();
+}
+
+function _updatePlanningPaneClass() {
+  const pane = document.getElementById('notes-pane');
+  if (!pane) return;
+  pane.classList.toggle('notes-pane-planning', _activeFilter === 'myday' || _activeFilter === 'myweek');
+}
+
+function _wirePlanTodoRows(body) {
+  body.querySelectorAll('.notes-plan-todo .note-check-dot').forEach(dot => {
+    dot.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = dot.dataset.noteId;
+      const kind = dot.dataset.kind;
+      const idx = dot.dataset.idx != null ? parseInt(dot.dataset.idx, 10) : null;
+      const note = _notes.find(n => n.id === id);
+      if (!note) return;
+      const row = dot.closest('.notes-plan-row');
+      try {
+        if (kind === 'item' && Array.isArray(note.items) && note.items[idx]) {
+          note.items[idx].done = true;
+          await _patchNote(id, { items: note.items });
+          if (note.items.every(it => it.done)) {
+            const r = (row || dot).getBoundingClientRect();
+            spawnConfetti(r.left + r.width / 2, r.top + r.height / 2, 60);
+          }
+        } else {
+          note.archived = true;
+          await _patchNote(id, { archived: true });
+        }
+        _renderNotes();
+      } catch {
+        uiModule.showError?.('Konnte Eintrag nicht aktualisieren');
+      }
+    });
+  });
+  body.querySelectorAll('.notes-plan-todo-text').forEach(el => {
+    el.addEventListener('click', () => {
+      const row = el.closest('.notes-plan-todo');
+      const id = row?.dataset?.noteId;
+      if (!id) return;
+      _editNote(id);
+    });
+  });
+}
+
+function _wirePlanEventRows(body) {
+  body.querySelectorAll('.notes-plan-event').forEach(el => {
+    el.addEventListener('click', async () => {
+      const start = el.dataset.eventStart;
+      try {
+        const cal = await import('./calendar.js');
+        if (start) cal.openCalendarTo?.(start);
+        else cal.openCalendar?.();
+      } catch {
+        uiModule.showToast?.('Kalender konnte nicht geöffnet werden');
+      }
+    });
+  });
+}
+
+function _persistNotesFilter() {
+  try {
+    localStorage.setItem(NOTES_FILTER_KEY, _activeFilter || 'all');
+  } catch {}
+}
+
+function _restoreNotesFilter() {
+  try {
+    if (!localStorage.getItem(NOTES_MYDAY_INTRO_KEY)) {
+      _activeFilter = 'myday';
+      localStorage.setItem(NOTES_MYDAY_INTRO_KEY, '1');
+      _persistNotesFilter();
+      return;
+    }
+    const saved = localStorage.getItem(NOTES_FILTER_KEY);
+    if (saved === 'myday' || saved === 'myweek') _activeFilter = saved;
+  } catch {}
 }
 
 function _isNoteFullyDone(note) {
@@ -664,7 +1027,7 @@ function _formatReminderTag(dateStr) {
   const sameDay = d.toDateString() === now.toDateString();
   const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
   const isTomorrow = d.toDateString() === tomorrow.toDateString();
-  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const time = fmtTime24(d);
   if (sameDay) return `Today, ${time}`;
   if (isTomorrow) return `Tomorrow, ${time}`;
   const dateLabel = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -1122,6 +1485,7 @@ export function openPanel() {
   _open = true;
   _editingId = null;
   _searchQuery = '';
+  _restoreNotesFilter();
   _clearViewedReminderGlows();
   _firedDotDismissedAt = Date.now();
   try { localStorage.setItem(REMINDER_DISMISSED_AT_KEY, String(_firedDotDismissedAt)); } catch {}
@@ -1513,7 +1877,11 @@ function _renderLabels(root = document) {
   const todayCount = _notes.filter(n => n.note_type === 'goal' && !n.archived && _nextGoalStep(n)).length;
   bar.style.display = '';
   const allActive = _activeLabel === null && _activeFilter === null;
+  const mydayCount = _myDayTodoCount();
+  const mydayIcon = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:2px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
   let html = `<button class="notes-label-chip${allActive ? ' active' : ''}" data-action="all">All</button>`;
+  html += `<button class="notes-label-chip notes-label-chip-myday${_activeFilter === 'myday' ? ' active' : ''}" data-action="myday" title="Heutige Termine und offene To-dos">${mydayIcon}Mein Tag <span class="notes-label-chip-count">${mydayCount}</span></button>`;
+  html += `<button class="notes-label-chip notes-label-chip-myweek${_activeFilter === 'myweek' ? ' active' : ''}" data-action="myweek" title="Wochenplan mit Kalender-Terminen">${mydayIcon}Meine Woche</button>`;
   html += `<button class="notes-label-chip${_activeFilter === 'default' ? ' active' : ''}" data-action="default" title="Show notes without tags">Default <span class="notes-label-chip-count">${defaultCount}</span></button>`;
   if (todayCount > 0) {
     const isOn = _activeFilter === 'today';
@@ -1546,15 +1914,27 @@ function _renderLabels(root = document) {
       if (chip.dataset.action === 'all') {
         _activeLabel = null;
         _activeFilter = null;
+        _persistNotesFilter();
+      } else if (chip.dataset.action === 'myday') {
+        _activeLabel = null;
+        _activeFilter = (_activeFilter === 'myday') ? null : 'myday';
+        _persistNotesFilter();
+      } else if (chip.dataset.action === 'myweek') {
+        _activeLabel = null;
+        _activeFilter = (_activeFilter === 'myweek') ? null : 'myweek';
+        _persistNotesFilter();
       } else if (chip.dataset.action === 'today') {
         _activeLabel = null;
         _activeFilter = (_activeFilter === 'today') ? null : 'today';
+        _persistNotesFilter();
       } else if (chip.dataset.action === 'goals') {
         _activeLabel = null;
         _activeFilter = (_activeFilter === 'goals') ? null : 'goals';
+        _persistNotesFilter();
       } else if (chip.dataset.action === 'default') {
         _activeLabel = null;
         _activeFilter = (_activeFilter === 'default') ? null : 'default';
+        _persistNotesFilter();
       } else if (chip.dataset.action === 'reminders') {
         _activeLabel = null;
         // Cycle: null → reminders → null → no-reminders → null → reminders → ...
@@ -1711,8 +2091,18 @@ function _animateReflow(prevPositions) {
 
 function _renderNotes() {
   _updateRailBadge();
+  _updatePlanningPaneClass();
   const body = document.querySelector('#notes-pane .notes-pane-body');
   if (!body) return;
+  if (_activeFilter === 'myday') {
+    _renderMyDayView(body);
+    return;
+  }
+  if (_activeFilter === 'myweek') {
+    _renderMyWeekView(body);
+    return;
+  }
+  body.classList.remove('notes-planning-body');
   const prevPositions = _captureCardPositions();
   const activeReminderHighlights = _loadActiveHighlights();
 
@@ -2022,6 +2412,405 @@ function _applyMasonry(body) {
     body.querySelectorAll('.note-card').forEach(c => _masonryObserver.observe(c));
     body.querySelectorAll('.notes-labels-bar, .notes-quick-add, .note-form').forEach(c => _masonryObserver.observe(c));
   }
+}
+
+// ── Mein Tag / Meine Woche (daily + weekly planning) ─────────────────────
+
+async function _renderMyDayView(body) {
+  const token = ++_mydayRenderToken;
+  body.innerHTML = '';
+  body.classList.add('notes-planning-body');
+  _renderLabelsInto(body);
+  _renderQuickAdd(body);
+  body.insertAdjacentHTML('beforeend', '<div class="notes-plan-loading">Lade deinen Tag…</div>');
+
+  const today = _myDayTodayStr();
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const events = _eventsOnDay(await _fetchEventsForRange(today, _dateStr(tomorrow)), today);
+  if (token !== _mydayRenderToken) return;
+
+  const weekRows = _collectWeekPlanRowsForDay(today, true);
+  const todoRows = _collectMyDayTodoRows();
+  body.querySelector('.notes-plan-loading')?.remove();
+
+  const dayLabel = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+  let html = `<div class="notes-plan-wrap notes-myday-wrap">
+    <div class="notes-plan-header">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <span>Mein Tag &middot; ${_esc(dayLabel)}</span>
+    </div>`;
+
+  html += `<div class="notes-plan-section">
+    <div class="notes-plan-section-title">Kalender <span class="notes-plan-section-count">${events.length}</span></div>`;
+  if (!events.length) {
+    html += '<div class="notes-plan-empty">Keine Kalender-Termine heute</div>';
+  } else {
+    html += '<div class="notes-plan-list">';
+    for (const ev of events) html += _calEventRowHtml(ev, 'notes-plan-row-stack');
+    html += '</div>';
+  }
+  html += '</div>';
+
+  if (weekRows.length) {
+    html += `<div class="notes-plan-section">
+      <div class="notes-plan-section-title">Aus meiner Woche <span class="notes-plan-section-count">${weekRows.length}</span></div>
+      <div class="notes-plan-list">`;
+    for (const row of weekRows) html += _planTodoRowHtml(row, 'notes-plan-row-stack', 'Woche');
+    html += '</div></div>';
+  }
+
+  html += `<div class="notes-plan-section">
+    <div class="notes-plan-section-title">Weitere To-dos <span class="notes-plan-section-count">${todoRows.length}</span></div>`;
+  if (!todoRows.length) {
+    html += '<div class="notes-plan-empty">Keine weiteren To-dos — oben eintippen</div>';
+  } else {
+    html += '<div class="notes-plan-list">';
+    for (const row of todoRows) html += _planTodoRowHtml(row);
+    html += '</div>';
+  }
+  html += '</div></div>';
+
+  body.insertAdjacentHTML('beforeend', html);
+  _wirePlanTodoRows(body);
+  _wirePlanEventRows(body);
+}
+
+async function _renderMyWeekView(body) {
+  const token = ++_myweekRenderToken;
+  body.innerHTML = '';
+  body.classList.add('notes-planning-body');
+  _renderLabelsInto(body);
+  body.insertAdjacentHTML('beforeend', '<div class="notes-plan-loading">Lade deine Woche…</div>');
+
+  const days = _weekDayDates();
+  const rangeStart = days[0].dateStr;
+  const rangeEndDate = new Date(days[6].dateStr);
+  rangeEndDate.setDate(rangeEndDate.getDate() + 1);
+  const allEvents = await _fetchEventsForRange(rangeStart, _dateStr(rangeEndDate));
+  if (token !== _myweekRenderToken) return;
+
+  body.querySelector('.notes-plan-loading')?.remove();
+
+  const weekLabel = `${days[0].dayNum}. ${days[0].month} – ${days[6].dayNum}. ${days[6].month}`;
+  let html = `<div class="notes-plan-wrap notes-myweek-wrap">
+    <div class="notes-plan-header">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <span>Meine Woche &middot; ${_esc(weekLabel)}</span>
+    </div>
+    <p class="notes-plan-hint">Kalender-Termine erscheinen automatisch (orange). Darunter planst du mit <strong>+ Planen</strong> — am Tag landen sie in <em>Mein Tag</em>.</p>
+    <div class="notes-myweek-days">`;
+
+  for (const day of days) {
+    const dayEvents = _eventsOnDay(allEvents, day.dateStr);
+    const planRows = _collectWeekPlanRowsForDay(day.dateStr);
+    const dueRows = _collectDueTodoRowsForDay(day.dateStr);
+    html += `<div class="notes-myweek-day${day.isToday ? ' is-today' : ''}" data-date="${_esc(day.dateStr)}">
+      <div class="notes-myweek-day-head">
+        <span class="notes-myweek-weekday">${_esc(day.weekday)}</span>
+        <span class="notes-myweek-date">${day.dayNum}. ${_esc(day.month)}</span>
+        ${day.isToday ? '<span class="notes-myweek-today-badge">Heute</span>' : ''}
+      </div>
+      <div class="notes-myweek-day-body">`;
+    if (!dayEvents.length && !planRows.length && !dueRows.length) {
+      html += '<div class="notes-plan-empty notes-myweek-empty">—</div>';
+    } else {
+      html += '<div class="notes-plan-list">';
+      for (const ev of dayEvents) html += _calEventRowHtml(ev, 'notes-plan-row-stack');
+      for (const row of planRows) html += _planTodoRowHtml(row, 'notes-plan-row-stack notes-myweek-draggable', 'Woche', day.dateStr);
+      for (const row of dueRows) html += _planTodoRowHtml(row, 'notes-plan-row-stack notes-myweek-draggable', 'Aufgabe', day.dateStr);
+      html += '</div>';
+    }
+    html += `<input type="text" class="notes-myweek-add" data-date="${_esc(day.dateStr)}" placeholder="+ Planen…" aria-label="Plan für ${day.weekday}" />
+      </div></div>`;
+  }
+
+  html += '</div></div>';
+  body.insertAdjacentHTML('beforeend', html);
+  _wirePlanTodoRows(body);
+  _wirePlanEventRows(body);
+  _wireMyWeekDragDrop(body);
+  body.querySelectorAll('.notes-myweek-add').forEach(input => {
+    input.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const dateStr = input.dataset.date;
+      const text = input.value;
+      input.disabled = true;
+      try {
+        await _createWeekPlanItem(dateStr, text);
+        input.value = '';
+        _renderNotes();
+      } catch {
+        uiModule.showError?.('Konnte Wochen-Eintrag nicht speichern');
+        input.disabled = false;
+      }
+    });
+  });
+}
+
+// ── Meine Woche: drag tasks between day cards ───────────────────────────
+const MYWEEK_LONG_PRESS_MS = 500;
+const MYWEEK_MOVE_CANCEL_PX = 12;
+const MYWEEK_MOUSE_DRAG_PX = 5;
+
+let _myWeekDrag = null;       // active drag session
+let _myWeekPending = null;    // pointerdown awaiting long-press / mouse move
+let _myWeekDragDocBound = false;
+let _myWeekDragMoved = false;
+
+function _myWeekDayAtPoint(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return el?.closest?.('.notes-myweek-day') || null;
+}
+
+function _clearMyWeekDropHighlights() {
+  document.querySelectorAll('.notes-myweek-day-drop-target').forEach(el => {
+    el.classList.remove('notes-myweek-day-drop-target');
+  });
+}
+
+function _highlightMyWeekDropTarget(x, y, sourceDay) {
+  _clearMyWeekDropHighlights();
+  const dayEl = _myWeekDayAtPoint(x, y);
+  if (!dayEl) return null;
+  const targetDay = dayEl.dataset.date;
+  if (targetDay && targetDay !== sourceDay) dayEl.classList.add('notes-myweek-day-drop-target');
+  return dayEl;
+}
+
+async function _moveMyWeekNoteToDay(noteId, targetDayStr, sourceDayStr) {
+  if (!noteId || !targetDayStr || targetDayStr === sourceDayStr) return;
+  const note = _notes.find(n => n.id === noteId);
+  if (!note) return;
+  const prevDue = note.due_date;
+  const newDue = _dueDateForTargetDay(prevDue, targetDayStr);
+  note.due_date = newDue;
+  try {
+    await _patchNote(noteId, { due_date: newDue });
+    await _fetchNotes();
+    _renderNotes();
+  } catch {
+    note.due_date = prevDue;
+    uiModule.showError?.('Konnte Aufgabe nicht verschieben');
+    _renderNotes();
+  }
+}
+
+function _myWeekPointerPoint(pointer) {
+  return {
+    clientX: pointer?.clientX ?? 0,
+    clientY: pointer?.clientY ?? 0,
+    pointerId: pointer?.pointerId,
+  };
+}
+
+function _activateMyWeekDrag(row, pointer) {
+  if (_myWeekDrag || !row) return;
+  const pt = _myWeekPointerPoint(pointer);
+  _beginMyWeekDrag(row, pt);
+  if (pt.pointerId != null) {
+    _myWeekDrag.pointerId = pt.pointerId;
+    try { row.setPointerCapture(pt.pointerId); } catch {}
+  }
+  _updateMyWeekDragGhost(pt);
+}
+
+function _beginMyWeekDrag(row, pointer) {
+  if (_myWeekDrag || !row) return;
+  const pt = _myWeekPointerPoint(pointer);
+  const rect = row.getBoundingClientRect();
+  const ghost = row.cloneNode(true);
+  ghost.classList.add('notes-myweek-drag-ghost');
+  ghost.classList.remove('notes-myweek-source-dim');
+  ghost.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(ghost);
+
+  row.classList.add('notes-myweek-source-dim');
+  document.body.classList.add('notes-myweek-drag-active');
+  document.querySelector('#notes-pane .notes-pane-body')?.classList.add('notes-myweek-drag-scroll-lock');
+
+  _myWeekDrag = {
+    row,
+    ghost,
+    noteId: row.dataset.noteId,
+    sourceDay: row.dataset.sourceDay || row.closest('.notes-myweek-day')?.dataset?.date || '',
+    grabOffsetX: pt.clientX - rect.left,
+    grabOffsetY: pt.clientY - rect.top,
+    ghostW: rect.width,
+    ghostH: rect.height,
+    pointerId: pt.pointerId,
+  };
+  _myWeekDragMoved = false;
+
+  ghost.style.width = rect.width + 'px';
+  ghost.style.left = (pt.clientX - _myWeekDrag.grabOffsetX) + 'px';
+  ghost.style.top = (pt.clientY - _myWeekDrag.grabOffsetY) + 'px';
+
+  try { navigator.vibrate?.(12); } catch {}
+  _highlightMyWeekDropTarget(pt.clientX, pt.clientY, _myWeekDrag.sourceDay);
+}
+
+function _updateMyWeekDragGhost(pointer) {
+  if (!_myWeekDrag) return;
+  _myWeekDragMoved = true;
+  const { ghost, grabOffsetX, grabOffsetY } = _myWeekDrag;
+  ghost.style.left = (pointer.clientX - grabOffsetX) + 'px';
+  ghost.style.top = (pointer.clientY - grabOffsetY) + 'px';
+  _highlightMyWeekDropTarget(pointer.clientX, pointer.clientY, _myWeekDrag.sourceDay);
+}
+
+function _cancelMyWeekPending() {
+  if (_myWeekPending?.timer) clearTimeout(_myWeekPending.timer);
+  _myWeekPending = null;
+}
+
+function _endMyWeekDrag(commit) {
+  _cancelMyWeekPending();
+  const drag = _myWeekDrag;
+  const moved = _myWeekDragMoved;
+  const lastX = drag?._lastX;
+  const lastY = drag?._lastY;
+  _myWeekDrag = null;
+  _clearMyWeekDropHighlights();
+  document.body.classList.remove('notes-myweek-drag-active');
+  document.querySelector('#notes-pane .notes-pane-body')?.classList.remove('notes-myweek-drag-scroll-lock');
+
+  if (!drag) return;
+
+  drag.row?.classList.remove('notes-myweek-source-dim');
+  drag.ghost?.remove();
+
+  if (!commit || !moved) return;
+
+  const dayEl = _myWeekDayAtPoint(lastX ?? 0, lastY ?? 0);
+  const targetDay = dayEl?.dataset?.date;
+  if (targetDay && targetDay !== drag.sourceDay) {
+    _moveMyWeekNoteToDay(drag.noteId, targetDay, drag.sourceDay);
+  }
+}
+
+function _onMyWeekPointerMove(e) {
+  if (_myWeekDrag) {
+    if (e.pointerId !== _myWeekDrag.pointerId) return;
+    e.preventDefault();
+    _myWeekDrag._lastX = e.clientX;
+    _myWeekDrag._lastY = e.clientY;
+    _updateMyWeekDragGhost(e);
+    return;
+  }
+  if (!_myWeekPending || e.pointerId !== _myWeekPending.pointerId) return;
+
+  _myWeekPending.lastX = e.clientX;
+  _myWeekPending.lastY = e.clientY;
+
+  const dx = e.clientX - _myWeekPending.startX;
+  const dy = e.clientY - _myWeekPending.startY;
+  const dist = Math.hypot(dx, dy);
+
+  if (_myWeekPending.isTouch) {
+    if (!_myWeekPending.started && dist > MYWEEK_MOVE_CANCEL_PX) {
+      _cancelMyWeekPending();
+      return;
+    }
+    return;
+  }
+
+  if (!_myWeekPending.started && dist >= MYWEEK_MOUSE_DRAG_PX) {
+    _myWeekPending.started = true;
+    _activateMyWeekDrag(_myWeekPending.row, e);
+    e.preventDefault();
+  }
+}
+
+function _onMyWeekPointerUp(e) {
+  if (_myWeekDrag && e.pointerId === _myWeekDrag.pointerId) {
+    _myWeekDrag._lastX = e.clientX;
+    _myWeekDrag._lastY = e.clientY;
+    try { _myWeekDrag.row.releasePointerCapture(e.pointerId); } catch {}
+    _endMyWeekDrag(true);
+    if (_myWeekDragMoved) e.preventDefault();
+    return;
+  }
+  if (_myWeekPending && e.pointerId === _myWeekPending.pointerId) {
+    _cancelMyWeekPending();
+  }
+}
+
+function _onMyWeekPointerCancel(e) {
+  if (_myWeekDrag && e.pointerId === _myWeekDrag.pointerId) {
+    _endMyWeekDrag(false);
+    return;
+  }
+  if (_myWeekPending && e.pointerId === _myWeekPending.pointerId) {
+    _cancelMyWeekPending();
+  }
+}
+
+function _wireMyWeekDragDrop(body) {
+  const wrap = body.querySelector('.notes-myweek-wrap');
+  if (!wrap) return;
+
+  if (!_myWeekDragDocBound) {
+    document.addEventListener('pointermove', _onMyWeekPointerMove, { passive: false });
+    document.addEventListener('pointerup', _onMyWeekPointerUp);
+    document.addEventListener('pointercancel', _onMyWeekPointerCancel);
+    _myWeekDragDocBound = true;
+  }
+
+  wrap.querySelectorAll('.notes-myweek-draggable').forEach(row => {
+    if (row.dataset.myweekDragBound === '1') return;
+    row.dataset.myweekDragBound = '1';
+
+    row.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      if (e.target.closest('.note-check-dot')) return;
+      if (_myWeekDrag || _myWeekPending) return;
+      const touchUi = window.matchMedia('(max-width: 768px)').matches;
+      if (touchUi && !e.target.closest('.notes-myweek-drag-handle')) return;
+
+      const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
+      _myWeekDragMoved = false;
+      _myWeekPending = {
+        row,
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        lastX: e.clientX,
+        lastY: e.clientY,
+        isTouch,
+        started: false,
+        timer: null,
+      };
+
+      if (isTouch) {
+        _myWeekPending.timer = setTimeout(() => {
+          if (!_myWeekPending || _myWeekPending.pointerId !== e.pointerId) return;
+          _myWeekPending.started = true;
+          const pending = _myWeekPending;
+          _myWeekPending = null;
+          _activateMyWeekDrag(pending.row, {
+            clientX: pending.lastX,
+            clientY: pending.lastY,
+            pointerId: pending.pointerId,
+          });
+        }, MYWEEK_LONG_PRESS_MS);
+      }
+    });
+
+    row.addEventListener('click', (e) => {
+      if (_myWeekDragMoved) {
+        e.preventDefault();
+        e.stopPropagation();
+        _myWeekDragMoved = false;
+      }
+    }, true);
+  });
+}
+
+function _wireMyDayView(body) {
+  _wirePlanTodoRows(body);
+  _wirePlanEventRows(body);
 }
 
 // Wire the Today aggregated view: tap a step's dot toggles it done; tap
@@ -3214,9 +4003,9 @@ function _buildForm(note = null) {
     document.body.appendChild(menu);
 
     const presetItems = [
-      { label: 'Later today', sub: _laterTodayDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), action: () => _setReminder(_toLocalDatetimeStr(_laterTodayDate())) },
-      { label: 'Tomorrow', sub: _tomorrowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), action: () => _setReminder(_toLocalDatetimeStr(_tomorrowDate())) },
-      { label: 'Next week', sub: _nextWeekDate().toLocaleDateString([], { weekday: 'short' }) + ' ' + _nextWeekDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), action: () => _setReminder(_toLocalDatetimeStr(_nextWeekDate())) },
+      { label: 'Later today', sub: fmtTime24(_laterTodayDate()), action: () => _setReminder(_toLocalDatetimeStr(_laterTodayDate())) },
+      { label: 'Tomorrow', sub: fmtTime24(_tomorrowDate()), action: () => _setReminder(_toLocalDatetimeStr(_tomorrowDate())) },
+      { label: 'Next week', sub: _nextWeekDate().toLocaleDateString([], { weekday: 'short' }) + ' ' + fmtTime24(_nextWeekDate()), action: () => _setReminder(_toLocalDatetimeStr(_nextWeekDate())) },
       { label: 'Select date and time', sub: '', action: () => _pickCustomDate() },
     ];
 
