@@ -614,22 +614,61 @@ def _compact_tool_line(name: str, section: str) -> str:
     return f"- `{name}` — " + lines[0][:160]
 
 
-def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool = False) -> str:
-    """Build the system prompt with only the specified tools included."""
+def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool = False,
+                     native: bool = True) -> str:
+    """Build the system prompt with only the specified tools included.
+
+    `native` describes how tools actually reach the model this turn. When
+    True the caller sends FUNCTION_TOOL_SCHEMAS and the model answers on the
+    structured tool_calls channel. When False (Ollama endpoints — see
+    `_is_ollama_native_url` / `_is_ollama_openai_compat_url`, which force
+    `_is_api_model = False`) no schemas are sent and `parse_tool_blocks` only
+    recognises fenced blocks, so the compact prompt has to teach that shape.
+    Sending the native wording on a text-protocol turn told local models to
+    "use native tool calls; do not write tool syntax in chat" while nothing
+    was listening on that channel — they emitted ```json {"tool_name": ...}
+    and the round ended with no tool executed.
+    """
     disabled = disabled_tools or set()
     included = tool_names - disabled
 
     if compact:
-        tool_lines = []
-        for name, _default_section in TOOL_SECTIONS.items():
-            if name in included:
-                tool_lines.append(f"- `{name}`")
+        if native:
+            tool_lines = [f"- `{name}`" for name in TOOL_SECTIONS if name in included]
+            preamble = (
+                "You are an AI assistant with native tool/function calling. "
+                "Only the tool schemas provided by the API are available for this turn. "
+                "Use native tool calls when action is needed; do not write tool syntax or tool instructions in chat."
+            )
+        else:
+            # Text protocol: keep each tool's fenced usage example so the model
+            # can copy the exact shape the parser accepts.
+            tool_lines = [
+                _compact_tool_line(name, _section_text(name, _default_section))
+                for name, _default_section in TOOL_SECTIONS.items()
+                if name in included
+            ]
+            preamble = (
+                "You are an AI assistant that uses tools by writing fenced code blocks. "
+                "There is NO function-calling channel this turn. A tool runs only when you write a "
+                "fenced block whose language tag is the tool name and whose body is a JSON object:\n"
+                "```manage_calendar\n{\"action\": \"list_calendars\"}\n```\n"
+                "Write the block(s) and stop; they execute and the output comes back in the next message. "
+                "Do NOT wrap calls in ```json, do NOT write {\"tool_name\": ..., \"arguments\": ...}, and do not "
+                "claim you did something for which you did not write a block."
+            )
+        rules = _API_AGENT_RULES
+        if not native:
+            # This bullet is the native preamble's twin; leaving it in tells the
+            # model to prefer a channel that isn't connected this turn.
+            rules = rules.replace(
+                "- Prefer native tool/function calling when tools are needed.",
+                "- Take action by writing a fenced tool block; that is the only channel this turn.",
+            )
         parts = [
-            "You are an AI assistant with native tool/function calling. "
-            "Only the tool schemas provided by the API are available for this turn. "
-            "Use native tool calls when action is needed; do not write tool syntax or tool instructions in chat.",
+            preamble,
             "## Available tools\n" + ("\n".join(tool_lines) if tool_lines else "none"),
-            _API_AGENT_RULES,
+            rules,
         ]
         parts.extend(_domain_rules_for_tools(included))
         return "\n\n".join(parts)
@@ -1530,6 +1569,7 @@ def _build_system_prompt(
     relevant_tools: Optional[Set[str]] = None,
     mcp_disabled_map: Optional[Dict[str, set]] = None,
     compact: bool = False,
+    native: bool = True,
     owner: Optional[str] = None,
     suppress_local_context: bool = False,
     suppress_skills: bool = False,
@@ -1550,7 +1590,7 @@ def _build_system_prompt(
         _ov_sig = _hl.sha256(_json.dumps(get_builtin_overrides() or {}, sort_keys=True).encode()).hexdigest()
     except Exception:
         _ov_sig = ""
-    cache_key = (frozenset(disabled_tools or []), bool(mcp_mgr), needs_admin, _rt_key, compact, _ov_sig, owner, suppress_local_context, suppress_skills)
+    cache_key = (frozenset(disabled_tools or []), bool(mcp_mgr), needs_admin, _rt_key, compact, native, _ov_sig, owner, suppress_local_context, suppress_skills)
     if _cached_base_prompt and _cached_base_prompt_key == cache_key and not active_document:
         agent_prompt = _cached_base_prompt
         # Skill index is user-editable (name + description), so it must never
@@ -1558,7 +1598,7 @@ def _build_system_prompt(
         # when the cache hits.
         _, _skill_index_block = _build_base_prompt(
             disabled_tools, mcp_mgr, needs_admin, relevant_tools,
-            mcp_disabled_map=mcp_disabled_map, compact=compact, owner=owner,
+            mcp_disabled_map=mcp_disabled_map, compact=compact, native=native, owner=owner,
             suppress_local_context=suppress_local_context,
             suppress_skills=suppress_skills,
         )
@@ -1570,6 +1610,7 @@ def _build_system_prompt(
             relevant_tools,
             mcp_disabled_map=mcp_disabled_map,
             compact=compact,
+            native=native,
             owner=owner,
             suppress_local_context=suppress_local_context,
             suppress_skills=suppress_skills,
@@ -2096,6 +2137,7 @@ def _build_base_prompt(
     relevant_tools=None,
     mcp_disabled_map=None,
     compact: bool = False,
+    native: bool = True,
     owner: Optional[str] = None,
     suppress_local_context: bool = False,
     suppress_skills: bool = False,
@@ -2122,7 +2164,7 @@ def _build_base_prompt(
         tool_names = set(relevant_tools) | {"ask_user", "update_plan"}
         if needs_admin:
             tool_names |= _ADMIN_TOOLS
-        agent_prompt = _assemble_prompt(tool_names, disabled, compact=compact)
+        agent_prompt = _assemble_prompt(tool_names, disabled, compact=compact, native=native)
     else:
         # Fallback: full prompt (RAG unavailable)
         agent_prompt = AGENT_SYSTEM_PROMPT
@@ -2133,10 +2175,12 @@ def _build_base_prompt(
                 "chat_with_model", "ask_teacher", "list_models",
             }
             agent_prompt = _assemble_prompt(
-                set(TOOL_SECTIONS.keys()) - mgmt_tools, disabled, compact=compact
+                set(TOOL_SECTIONS.keys()) - mgmt_tools, disabled, compact=compact,
+                native=native,
             )
         elif compact:
-            agent_prompt = _assemble_prompt(set(TOOL_SECTIONS.keys()), disabled, compact=True)
+            agent_prompt = _assemble_prompt(set(TOOL_SECTIONS.keys()), disabled, compact=True,
+                                            native=native)
 
     # Inject the Level-0 skill index — one line per skill so the agent
     # knows what canonical procedures exist. Includes published skills
@@ -3085,6 +3129,7 @@ async def stream_agent_loop(
     messages, mcp_schemas = _build_system_prompt(
         messages, model, _prompt_active_document, mcp_mgr, disabled_tools,
         needs_admin=_needs_admin, relevant_tools=_relevant_tools,
+        native=_is_api_model,
         mcp_disabled_map=_mcp_disabled_map,
         compact=_compact_agent_prompt,
         owner=owner,
