@@ -2035,8 +2035,23 @@ class TaskScheduler:
             extraction_concurrency=extraction_concurrency,
         )
 
+        # DeepResearcher only ever sees the bare prompt, so a scheduled research
+        # task has no idea what day it is: a prompt saying "the last 7 days"
+        # gets resolved to whatever the model guesses, which in practice means a
+        # date in its training past. LLM tasks are already grounded this way via
+        # current_datetime_context_message_for_tz (see _execute_llm_task); do
+        # the same here so recurring research actually researches *now*.
+        query = task.prompt or ""
+        try:
+            from src.user_time import current_datetime_context_message_for_tz
+            _dt = current_datetime_context_message_for_tz(_resolve_task_timezone(db, task))
+            if _dt and _dt.get("content"):
+                query = f"{_dt['content']}\n\n{query}"
+        except Exception:
+            logger.debug("research date grounding failed", exc_info=True)
+
         started_ts = time.time()
-        report = await researcher.research(task.prompt)
+        report = await researcher.research(query)
         completed_ts = time.time()
         try:
             stats = researcher.get_stats() or {}
