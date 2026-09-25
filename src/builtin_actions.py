@@ -2333,7 +2333,9 @@ async def action_check_email_urgency(owner: str, **kwargs) -> Tuple[str, bool]:
         new_urgent = [k for k in urgent_keys if k not in notified_uids]
         newly_notified = set()
         notify_failed = set()
-        if new_urgent:
+        # Triage and inbox tagging always run; only the push is optional, so
+        # the reminder channel can stay reserved for calendar/todo reminders.
+        if new_urgent and settings.get("urgent_email_push", True):
             title = "Urgent email" if total_urgent == 1 else f"{total_urgent} urgent emails"
             # Build a real listing — subject · sender · reason for each urgent
             # one — so the reminder email tells you which messages to act on,

@@ -188,6 +188,9 @@ DEFAULT_SETTINGS = {
     # ntfy (JSON mode), or any service that accepts a POST with a JSON body.
     "reminder_webhook_integration_id": "",
     "reminder_webhook_payload_template": "",
+    # Push urgent emails over the reminder channel (browser/email/ntfy).
+    # Off keeps the triage and the inbox urgency dots, just without a push.
+    "urgent_email_push": True,
     # Email triage scanner rules. Running/paused state and schedule live in
     # Tasks via the built-in `check_email_urgency` task.
     "urgent_email_prompt": (
