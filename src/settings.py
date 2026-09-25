@@ -168,6 +168,13 @@ DEFAULT_SETTINGS = {
     # Max relevant skills injected into the prompt for one request. The skills
     # library can grow beyond this; cleanup/retirement is an explicit review flow.
     "skill_max_injected": 3,
+    # Calendar: pull/push CalDAV in the background (src/caldav_autosync.py)
+    # so events created on a phone reach reminders, the agent and the CLI
+    # without anyone opening the calendar page. The interval is clamped to
+    # [5, 1440] minutes; ODYSSEUS_CALDAV_AUTOSYNC=0 disables the loop
+    # regardless of these values.
+    "caldav_auto_sync": True,
+    "caldav_sync_interval_min": 15,
     # Reminders
     "reminder_channel": "browser",   # "browser" | "email" | "ntfy" | "webhook"
     "reminder_llm_synthesis": False,

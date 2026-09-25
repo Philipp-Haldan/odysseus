@@ -1244,6 +1244,13 @@ async def _startup_event():
     from src.cookbook_serve_lifecycle import cookbook_serve_lifecycle_loop
     _startup_tasks.append(asyncio.create_task(cookbook_serve_lifecycle_loop()))
 
+    # Periodic CalDAV sync — without it a pull only happens when the
+    # calendar page is opened, so phone-created events stay invisible to
+    # reminders/agent/CLI. Gated by the `caldav_auto_sync` setting
+    # (default on); interval via `caldav_sync_interval_min` (15 min).
+    from src.caldav_autosync import caldav_autosync_loop
+    _startup_tasks.append(asyncio.create_task(caldav_autosync_loop()))
+
     logger.info("Application startup complete")
 
 async def _shutdown_event():
