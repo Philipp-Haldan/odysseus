@@ -89,6 +89,11 @@ output.txt.txt
 reports/
 tasks/
 scripts/compound/*.json
+# Personal one-off import/seed scripts (local only)
+scripts/import_mobile_notes.py
+scripts/create_philipp_events.py
+scripts/seed_philipp_memories.py
+scripts/verify_philipp_events.py
 research_data/
 **/search_analytics.json
 

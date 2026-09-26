@@ -21,6 +21,15 @@ services:
       # Ollama at http://host.docker.internal:11434.
       - "host.docker.internal:host-gateway"
     environment:
+      # Ohne das laeuft der Container auf UTC. Faelligkeiten werden aber ohne
+      # Offset gespeichert ("2026-09-21T18:30:00", so liefert es auch
+      # parse_due_for_user), und der Backend-Scanner in action_ping_notes
+      # deutet naive Zeiten als Systemzeit -- jede Erinnerung feuerte damit
+      # zwei Stunden zu spaet. Nur ueber den Browser-Kanal fiel das nicht auf,
+      # weil den das Frontend in der Zeitzone des Nutzers ausloest.
+      # Zeitplaene selbst sind unberuehrt: der Scheduler rechnet explizit in
+      # UTC (_utcnow() in src/task_scheduler.py).
+      - TZ=${TZ:-Europe/Berlin}
       - LLM_HOST=${LLM_HOST:-localhost}
       - LLM_HOSTS=${LLM_HOSTS:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -146,6 +155,11 @@ services:
       - ntfy-cache:/var/cache/ntfy
     environment:
       - NTFY_BASE_URL=${NTFY_BASE_URL:-http://localhost:8091}
+      # iOS laesst selbst gehostete Server nicht dauerhaft im Hintergrund
+      # lauschen. Ohne Upstream kommen Pushes erst Stunden spaeter an. Der
+      # Upstream bekommt nur die Message-ID und den SHA256 der Topic-URL --
+      # nicht den Inhalt. Leer lassen schaltet es ab (Android braucht es nicht).
+      - NTFY_UPSTREAM_BASE_URL=${NTFY_UPSTREAM_BASE_URL:-}
     restart: unless-stopped
 
 volumes:

@@ -9,7 +9,8 @@ function clearFreshComposerRestore() {
   const hash = window.location.hash || '';
   const isEntityHash = /^#(?:document|note|image|email|event|task|skill|research)-/.test(hash)
     || /^#open=notes&note=/.test(hash);
-  const hasSessionTarget = !!((hash && !isEntityHash) || Storage.get('lastSessionId'));
+  const isFreshOpen = !sessionStorage.getItem('ody-session-active');
+  const hasSessionTarget = !!((hash && !isEntityHash) || (!isFreshOpen && Storage.get('lastSessionId')));
   if (hasSessionTarget) return;
   if (msgInput.value) {
     msgInput.value = '';

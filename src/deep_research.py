@@ -145,6 +145,31 @@ Requirements:
 - Write in an engaging, informative style — not dry or robotic
 """
 
+# A question carrying this marker brings its own formatting rules. The default
+# template above dictates a 1500-word minimum, an executive summary and a
+# magazine tone, and CATEGORY_PROMPTS can bolt a whole other skeleton on top --
+# all of which silently overrode callers who asked for something short and
+# strictly shaped. When the marker is present, the caller wins.
+FORMAT_OVERRIDE_MARKER = "<!-- BERICHTSFORM-VORGABE -->"
+
+FINAL_REPORT_PROMPT_CALLER_FORMAT = """Write the report answering this question. The question states exactly how the
+report must be structured and how long it may be -- follow those rules to the
+letter.
+
+**Question:** {question}
+
+**All collected evidence and analysis:**
+{report}
+
+Requirements:
+- The question's own formatting rules override every default. Do not add
+  sections, summaries or headings it does not ask for, and do not exceed the
+  length it sets.
+- Answer in the language the question is written in.
+- Cite source URLs inline [like this](url); use only the evidence above and
+  never invent a source.
+"""
+
 CATEGORY_PROMPTS = {
     "product": """IMPORTANT FORMAT OVERRIDE — this is a PRODUCT research report:
 - Structure as a RANKED LIST of products/options (best first)
@@ -181,6 +206,16 @@ CATEGORY_PROMPTS = {
 # ---------------------------------------------------------------------------
 # DeepResearcher
 # ---------------------------------------------------------------------------
+# Token budgets sized for reasoning models. These calls all strip the model's
+# <think> block before parsing, so the budget has to cover the reasoning AND the
+# answer — otherwise generation stops mid-thought and the visible content is the
+# empty string. Measured on qwen3:30b-a3b via Ollama: ~3.4k reasoning tokens for
+# a single query-generation call. Non-reasoning models simply finish early and
+# pay nothing for the headroom.
+REASONING_BUDGET = 8192
+STOP_DECISION_BUDGET = 2048
+
+
 class DeepResearcher:
     """
     Iterative research engine following the IterResearch pattern.
@@ -487,7 +522,13 @@ class DeepResearcher:
             response = await self._llm(
                 [{"role": "user", "content": prompt}],
                 temperature=0.5,
-                max_tokens=4096,
+                # A reasoning model spends its budget inside <think> before it
+                # writes anything, and _llm strips that block. Qwen3-30B needs
+                # ~3.4k tokens of reasoning for this call alone, so a 4096 cap
+                # returned finish_reason="length" with EMPTY content — the round
+                # then produced no queries and the whole research stopped with
+                # "No information could be gathered".
+                max_tokens=REASONING_BUDGET,
                 timeout=getattr(self, "query_timeout", 120),
             )
             queries = self._parse_json_array(response)
@@ -639,7 +680,10 @@ class DeepResearcher:
                     untrusted_context_message("webpage", content),
                 ],
                 temperature=0.2,
-                max_tokens=2048,
+                # Same truncation as query generation above: at 2048 a reasoning
+                # model never reached the JSON, so findings came back as
+                # "(no content)" and the report was built from empty shells.
+                max_tokens=REASONING_BUDGET,
                 timeout=self.extraction_timeout,
             )
             parsed = self._parse_json_object(response)
@@ -716,7 +760,10 @@ class DeepResearcher:
             response = await self._llm(
                 [{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=128,
+                # 128 tokens cannot hold a reasoning block plus the answer, so
+                # this always came back empty for thinking models and the loop
+                # never got a usable YES/NO.
+                max_tokens=STOP_DECISION_BUDGET,
             )
             # Reasoning models prepend a <think>...</think> block — strip it
             # before checking for YES/NO, otherwise the answer always looks
@@ -736,13 +783,14 @@ class DeepResearcher:
     # ------------------------------------------------------------------
     async def _final_report(self, question: str, report: str) -> str:
         """LLM writes a polished final report, retrying if too short."""
-        prompt = FINAL_REPORT_PROMPT.format(
-            question=question,
-            report=report,
-        )
-        cat_extra = CATEGORY_PROMPTS.get(self.category or "", "")
-        if cat_extra:
-            prompt += "\n\n" + cat_extra
+        caller_formats = FORMAT_OVERRIDE_MARKER in (question or "")
+        template = (FINAL_REPORT_PROMPT_CALLER_FORMAT if caller_formats
+                    else FINAL_REPORT_PROMPT)
+        prompt = template.format(question=question, report=report)
+        if not caller_formats:
+            cat_extra = CATEGORY_PROMPTS.get(self.category or "", "")
+            if cat_extra:
+                prompt += "\n\n" + cat_extra
 
         try:
             result = await self._llm(
@@ -752,8 +800,9 @@ class DeepResearcher:
                 timeout=180,
             )
 
-            # If report is too short, ask the LLM to expand it
-            if len(result.split()) < 400:
+            # If report is too short, ask the LLM to expand it -- unless the
+            # caller deliberately asked for something short.
+            if not caller_formats and len(result.split()) < 400:
                 logger.info(f"Final report too short ({len(result.split())} words), requesting expansion")
                 self._emit(phase="writing", message="Expanding report...")
                 expanded = await self._llm(

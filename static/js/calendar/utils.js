@@ -178,3 +178,15 @@ export function _localDateOf(isoStr) {
   }
   return isoStr.slice(0, 10);
 }
+
+// ── 24-hour time formatting (locale-independent HH:MM) ──
+
+export const EU_TIME_OPTS = { hour: '2-digit', minute: '2-digit', hour12: false };
+
+export function fmtTime24(d) {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+export function fmtDateTime24(d, dateOpts) {
+  return d.toLocaleDateString([], dateOpts) + ' ' + fmtTime24(d);
+}

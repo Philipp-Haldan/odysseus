@@ -3,9 +3,21 @@
 
     odysseus-tasks list [--status active|paused|completed] [--limit N]
     odysseus-tasks show TASK_ID
+    odysseus-tasks create --name N --prompt-file F --schedule weekly --day 0
+                          --time HH:MM --email addr@host [--type research]
+    odysseus-tasks run TASK_ID [--base-url URL]
     odysseus-tasks pause TASK_ID
     odysseus-tasks resume TASK_ID
     odysseus-tasks runs [--task TASK_ID] [--limit N]
+
+`create` writes the row the Tasks UI would write and mints a webhook token
+so `run` can trigger a real in-process execution without a browser session
+(the webhook endpoint is auth-exempt by design — the token IS the auth).
+
+NOTE ON TIME: `--time` is UTC, not local wall-clock. A task only gets a
+local timezone when it is linked to a CrewMember that has one set; see
+compute_next_run() in src/task_scheduler.py. Germany in summer is UTC+2,
+so 02:00 here means 04:00 local.
 """
 
 from __future__ import annotations
@@ -15,11 +27,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
 from cli import quiet_logs, emit, fail, common_parser, run, REPO_ROOT as _REPO_ROOT
 quiet_logs()
 
-import argparse, json, logging, os, sys
+import argparse, json, logging, os, secrets, sys, uuid
 from pathlib import Path
 
 try:
     from core.database import SessionLocal, ScheduledTask, TaskRun
+    from src.task_scheduler import compute_next_run
     quiet_logs()
 except ModuleNotFoundError as e:
     sys.stderr.write(f"error: {e}\nhint: run from repo root with venv active.\n")
@@ -43,6 +56,8 @@ def _serialize_task(t: "ScheduledTask") -> dict:
         "next_run": t.next_run.isoformat() if t.next_run else "",
         "last_run": t.last_run.isoformat() if t.last_run else "",
         "status": t.status,
+        "scheduled_day": t.scheduled_day,
+        "output_target": t.output_target or "",
         "model": t.model,
         "run_count": t.run_count or 0,
         "cron_expression": t.cron_expression or "",
@@ -54,9 +69,10 @@ def _serialize_run(r: "TaskRun") -> dict:
         "id": r.id,
         "task_id": r.task_id,
         "started_at": r.started_at.isoformat() if r.started_at else "",
-        "completed_at": r.completed_at.isoformat() if r.completed_at else "",
+        "finished_at": r.finished_at.isoformat() if r.finished_at else "",
         "status": r.status,
-        "output_preview": _preview_text(getattr(r, "output", "")),
+        "error": _preview_text(getattr(r, "error", "")),
+        "output_preview": _preview_text(getattr(r, "result", "")),
     }
 
 
@@ -127,6 +143,114 @@ def cmd_runs(args):
         db.close()
 
 
+DEFAULT_BASE_URL = os.environ.get("ODYSSEUS_URL", "http://localhost:7000")
+
+
+def cmd_create(args):
+    """Create a scheduled task from the shell.
+
+    Mirrors POST /api/tasks (routes/task_routes.py create_task) for the
+    schedule-triggered llm/research case. Action tasks are deliberately not
+    supported here — some of them shell out and are admin-gated in the route.
+    """
+    prompt = args.prompt
+    if args.prompt_file:
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+
+    if args.type == "action":
+        if not args.action:
+            fail("--action is required for action tasks")
+        # Mirror the route's own gate rather than working around it: shell
+        # actions stay admin-only here too (routes/task_routes.py create_task).
+        from src.task_action_policy import (
+            is_admin_only_task_action, owner_has_admin_task_privileges)
+        if (is_admin_only_task_action("action", args.action)
+                and not owner_has_admin_task_privileges(args.owner)):
+            fail(f"action {args.action!r} requires admin privileges; "
+                 f"owner {args.owner!r} does not have them")
+        # run_local/run_script/ssh_command read the command out of the prompt.
+        if not (prompt or "").strip():
+            fail(f"--prompt is required for action {args.action!r} "
+                 "(it carries the command)")
+    elif not (prompt or "").strip():
+        fail("--prompt or --prompt-file is required for llm/research tasks")
+
+    next_run = compute_next_run(args.schedule, args.time, args.day, None)
+    if not next_run:
+        fail(f"schedule {args.schedule!r} + time {args.time!r} produced no next_run")
+
+    output_target = f"email:{args.email}" if args.email else args.output_target
+
+    db = SessionLocal()
+    try:
+        task = ScheduledTask(
+            id=str(uuid.uuid4()),
+            owner=args.owner,
+            name=args.name,
+            prompt=prompt,
+            task_type=args.type,
+            action=args.action or None,
+            schedule=args.schedule,
+            scheduled_time=args.time,
+            scheduled_day=args.day,
+            trigger_type="schedule",
+            trigger_counter=0,
+            next_run=next_run,
+            status="active",
+            output_target=output_target,
+            model=args.model or None,
+            endpoint_url=args.endpoint or None,
+            # Minted even though trigger_type is "schedule": the webhook route
+            # only matches on (id, token, status=active), so this gives `run`
+            # a session-free way to trigger a real execution.
+            webhook_token=secrets.token_urlsafe(32),
+            notifications_enabled=not args.no_notify,
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        out = _serialize_task(task)
+        out["webhook_token"] = "***"
+        emit(out, args)
+    finally:
+        db.close()
+
+
+def cmd_run(args):
+    """Trigger a real run through the app's auth-exempt webhook endpoint.
+
+    Writing to the DB alone would not do: the scheduler lives inside the
+    running app process, so the run has to be requested over HTTP.
+    """
+    import httpx
+
+    db = SessionLocal()
+    try:
+        t = db.get(ScheduledTask, args.id)
+        if not t:
+            fail(f"no task with id {args.id!r}")
+        if not t.webhook_token:
+            fail("task has no webhook token; recreate it with `create` "
+                 "or regenerate one in the UI")
+        if t.status != "active":
+            fail(f"task status is {t.status!r}; the webhook route only "
+                 "accepts active tasks — `resume` it first")
+        token, task_id = t.webhook_token, t.id
+    finally:
+        db.close()
+
+    url = f"{args.base_url.rstrip('/')}/api/tasks/{task_id}/webhook/{token}"
+    try:
+        r = httpx.post(url, timeout=30)
+    except Exception as e:
+        fail(f"could not reach Odysseus at {args.base_url}: {e}")
+    if r.status_code == 409:
+        fail("task is already running")
+    if r.status_code >= 400:
+        fail(f"trigger failed: HTTP {r.status_code} {r.text[:200]}")
+    emit({"ok": True, "id": task_id, "triggered": True}, args)
+
+
 def _build_parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--pretty", action="store_true")
@@ -150,6 +274,32 @@ def _build_parser():
     pr = sub.add_parser("resume", parents=[common])
     pr.add_argument("id")
     pr.set_defaults(func=cmd_resume)
+
+    pc = sub.add_parser("create", parents=[common])
+    pc.add_argument("--name", required=True)
+    pc.add_argument("--prompt")
+    pc.add_argument("--prompt-file", help="read the prompt from this file")
+    pc.add_argument("--type", default="research",
+                    choices=["llm", "research", "action"])
+    pc.add_argument("--action", help="builtin action name (for --type action)")
+    pc.add_argument("--schedule", default="weekly",
+                    choices=["daily", "weekly", "monthly"])
+    pc.add_argument("--day", type=int, default=0,
+                    help="weekly: 0=Mon..6=Sun; monthly: day-of-month")
+    pc.add_argument("--time", default="02:00", help="HH:MM in UTC (see module docstring)")
+    pc.add_argument("--email", help="deliver result to this address")
+    pc.add_argument("--no-notify", action="store_true",
+                    help="silence completion notifications")
+    pc.add_argument("--output-target", default="session")
+    pc.add_argument("--model")
+    pc.add_argument("--endpoint")
+    pc.add_argument("--owner", default="admin")
+    pc.set_defaults(func=cmd_create)
+
+    prun = sub.add_parser("run", parents=[common])
+    prun.add_argument("id")
+    prun.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    prun.set_defaults(func=cmd_run)
 
     prn = sub.add_parser("runs", parents=[common])
     prn.add_argument("--task", help="filter by task id")

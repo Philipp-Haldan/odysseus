@@ -1,0 +1,13 @@
+# Windows overlay: mount host folders into the Odysseus container so the
+# agent workspace browser and file tools can see your PC directories.
+#
+# Inside the container your Documents folder appears as:
+#   /host/Documents
+#
+# Example workspace paths:
+#   /host/Documents/gamejam
+#   /host/Documents/pewdiepie_odysseus
+services:
+  odysseus:
+    volumes:
+      - ${HOST_DOCUMENTS_DIR:?Set HOST_DOCUMENTS_DIR in .env}:/host/Documents:rw

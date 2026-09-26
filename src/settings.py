@@ -140,6 +140,9 @@ DEFAULT_SETTINGS = {
     # Email replies use email_writing_style instead because greetings,
     # signatures, and mailbox identity rules are medium-specific.
     "document_writing_style": "",
+    # When set (e.g. "German (de-DE)"), injected into agent/chat system
+    # prompts so replies stay in that language unless the user asks otherwise.
+    "response_language": "",
     # Ordered fallback chain for the default chat model. Each entry is
     # {"endpoint_id": "...", "model": "..."}. If the primary model fails
     # before producing output (endpoint offline / errors), the chat
@@ -165,6 +168,13 @@ DEFAULT_SETTINGS = {
     # Max relevant skills injected into the prompt for one request. The skills
     # library can grow beyond this; cleanup/retirement is an explicit review flow.
     "skill_max_injected": 3,
+    # Calendar: pull/push CalDAV in the background (src/caldav_autosync.py)
+    # so events created on a phone reach reminders, the agent and the CLI
+    # without anyone opening the calendar page. The interval is clamped to
+    # [5, 1440] minutes; ODYSSEUS_CALDAV_AUTOSYNC=0 disables the loop
+    # regardless of these values.
+    "caldav_auto_sync": True,
+    "caldav_sync_interval_min": 15,
     # Reminders
     "reminder_channel": "browser",   # "browser" | "email" | "ntfy" | "webhook"
     "reminder_llm_synthesis": False,
@@ -178,6 +188,9 @@ DEFAULT_SETTINGS = {
     # ntfy (JSON mode), or any service that accepts a POST with a JSON body.
     "reminder_webhook_integration_id": "",
     "reminder_webhook_payload_template": "",
+    # Push urgent emails over the reminder channel (browser/email/ntfy).
+    # Off keeps the triage and the inbox urgency dots, just without a push.
+    "urgent_email_push": True,
     # Email triage scanner rules. Running/paused state and schedule live in
     # Tasks via the built-in `check_email_urgency` task.
     "urgent_email_prompt": (

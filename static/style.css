@@ -33105,6 +33105,9 @@ body.notes-view .chat-container { flex: 1; min-width: 0; }
     height: 100dvh !important;
     max-height: 100dvh !important;
     z-index: 170;
+    /* Keep the sheet grabber + header below the iOS notch / status bar. */
+    padding-top: env(safe-area-inset-top, 0px);
+    box-sizing: border-box;
     /* Bottom-sheet treatment like the document editor: stroked, rounded top,
        slides up from the bottom. */
     border: 1px solid var(--border);
@@ -33131,7 +33134,7 @@ body.notes-view .chat-container { flex: 1; min-width: 0; }
   body.notes-view .notes-mobile-grabber {
     display: block;
     flex-shrink: 0;
-    height: 18px;
+    height: 22px;
     position: relative;
     background: var(--bg);
     touch-action: none;
@@ -33140,7 +33143,7 @@ body.notes-view .chat-container { flex: 1; min-width: 0; }
   body.notes-view .notes-mobile-grabber::before {
     content: '';
     position: absolute;
-    top: 7px;
+    top: 10px;
     left: 50%;
     transform: translateX(-50%);
     width: 36px;
@@ -33894,12 +33897,14 @@ body.notes-drag-mode .note-card-pin svg {
 }
 .notes-pane-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
 }
 
 .note-card.note-card-sliding-out {
@@ -35640,6 +35645,507 @@ body.notes-mobile-mode.notes-drag-mode .note-card-pin.active {
   opacity: 0.6;
   font-variant-numeric: tabular-nums;
 }
+
+/* ── Mein Tag / Meine Woche (planning views) ─────────────────────────── */
+.notes-pane.notes-pane-planning .notes-pane-body,
+.notes-pane.notes-pane-planning.notes-view-grid .notes-pane-body {
+  display: flex !important;
+  flex-direction: column !important;
+  grid-template-columns: unset !important;
+  grid-auto-rows: unset !important;
+  grid-auto-flow: unset !important;
+  align-content: stretch !important;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+}
+.notes-pane.notes-pane-planning .notes-labels-bar,
+.notes-pane.notes-pane-planning.notes-view-grid .notes-labels-bar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: var(--bg);
+  padding: 8px 8px 6px;
+  margin: 0 0 4px !important;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  grid-column: unset !important;
+  grid-row: unset !important;
+}
+.notes-pane.notes-pane-planning .notes-quick-add,
+.notes-pane.notes-pane-planning.notes-view-grid .notes-quick-add {
+  position: relative;
+  z-index: 4;
+  background: var(--bg);
+  margin: 0 0 8px !important;
+  flex-shrink: 0;
+  grid-row-end: auto !important;
+  grid-column: auto !important;
+  width: 100%;
+  box-sizing: border-box;
+  transform: none !important;
+}
+.notes-pane.notes-pane-planning .notes-planning-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+  width: 100%;
+  /* Must stay scrollable — overflow:visible let content clip inside
+     .notes-pane { overflow:hidden } on phones with no way to scroll. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+.notes-pane.notes-pane-planning .notes-plan-wrap {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+.notes-label-chip-myday.active,
+.notes-label-chip-myweek.active {
+  border-color: color-mix(in srgb, var(--accent-warm) 55%, var(--border));
+}
+.notes-plan-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0 0 12px;
+  width: 100%;
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+.notes-plan-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent-warm);
+  padding: 4px 10px 0;
+  flex-shrink: 0;
+}
+.notes-plan-hint {
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.7;
+  margin: 0;
+  padding: 0 10px 4px;
+}
+.notes-plan-loading,
+.notes-plan-empty {
+  font-size: 12px;
+  opacity: 0.55;
+  font-style: italic;
+  padding: 8px 12px;
+}
+.notes-plan-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.notes-plan-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.65;
+  padding: 0 10px;
+}
+.notes-plan-section-count {
+  font-weight: 600;
+  opacity: 0.8;
+}
+.notes-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 2px;
+}
+.notes-plan-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: opacity 0.2s, transform 0.2s, background 0.15s;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+.notes-plan-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 9px 10px;
+}
+.notes-plan-row-stack.notes-plan-todo {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+}
+.notes-plan-row-stack .notes-plan-row-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+.notes-plan-row-stack .notes-plan-row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.notes-plan-row-stack .notes-plan-event-time {
+  width: auto;
+  flex-shrink: 0;
+}
+.notes-plan-row-stack .notes-plan-event-name,
+.notes-plan-row-stack .notes-plan-todo-text {
+  width: 100%;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.notes-plan-row-compact {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.notes-plan-todo {
+  border-left: 3px solid color-mix(in srgb, var(--accent-warm) 70%, transparent);
+}
+.notes-plan-event {
+  border-left: 3px solid color-mix(in srgb, var(--accent, var(--red)) 70%, transparent);
+  cursor: pointer;
+}
+.notes-plan-event:hover {
+  background: color-mix(in srgb, var(--accent, var(--red)) 6%, var(--panel, var(--bg)));
+}
+.notes-plan-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1.3;
+}
+.notes-plan-badge-cal {
+  background: color-mix(in srgb, var(--accent, var(--red)) 18%, transparent);
+  color: var(--accent, var(--red));
+  border: 1px solid color-mix(in srgb, var(--accent, var(--red)) 35%, transparent);
+}
+.notes-plan-badge-week {
+  background: color-mix(in srgb, var(--accent-warm) 18%, transparent);
+  color: var(--accent-warm);
+  border: 1px solid color-mix(in srgb, var(--accent-warm) 35%, transparent);
+}
+.notes-plan-badge-todo {
+  background: color-mix(in srgb, var(--blue, #4a9eff) 18%, transparent);
+  color: var(--blue, #4a9eff);
+  border: 1px solid color-mix(in srgb, var(--blue, #4a9eff) 35%, transparent);
+}
+.notes-plan-badge-overdue {
+  background: color-mix(in srgb, var(--red) 18%, transparent);
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
+}
+.notes-plan-row-overdue {
+  border-color: color-mix(in srgb, var(--red) 40%, var(--border));
+  background: color-mix(in srgb, var(--red) 6%, var(--panel, var(--bg)));
+}
+.notes-plan-event-time {
+  flex-shrink: 0;
+  width: 76px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+.notes-plan-row-compact .notes-plan-event-time {
+  width: 64px;
+  font-size: 10px;
+}
+.notes-plan-event-name,
+.notes-plan-todo-text {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.notes-plan-row-compact .notes-plan-event-name,
+.notes-plan-row-compact .notes-plan-todo-text {
+  font-size: 12px;
+}
+.notes-plan-todo .note-check-dot {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--fg) 40%, transparent);
+  cursor: pointer;
+}
+.notes-plan-todo .note-check-dot:hover {
+  border-color: var(--accent-warm);
+}
+.notes-plan-todo-text {
+  cursor: pointer;
+}
+.notes-plan-todo-text:hover {
+  text-decoration: underline;
+}
+.notes-myweek-days {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 2px 16px;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: visible;
+}
+.notes-myweek-day {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 2%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 10px 12px;
+  flex-shrink: 0;
+}
+.notes-myweek-day.is-today {
+  border-color: color-mix(in srgb, var(--accent-warm) 50%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-warm) 20%, transparent);
+}
+.notes-myweek-day-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.notes-myweek-weekday {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.notes-myweek-date {
+  font-size: 11px;
+  opacity: 0.65;
+}
+.notes-myweek-today-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent-warm);
+  text-transform: uppercase;
+}
+.notes-myweek-day-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  width: 100%;
+}
+.notes-myweek-day .notes-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-height: 220px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+.notes-myweek-empty {
+  padding: 4px 8px;
+  text-align: center;
+}
+.notes-myweek-add {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+.notes-myweek-add:focus {
+  outline: none;
+  border-color: var(--accent-warm);
+  opacity: 1;
+}
+.notes-myweek-wrap {
+  width: 100%;
+  min-width: 0;
+  overflow: visible;
+}
+
+/* Meine Woche drag-and-drop */
+.notes-myweek-draggable {
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.notes-myweek-drag-handle {
+  display: none;
+  flex-shrink: 0;
+  align-self: stretch;
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 45%, transparent);
+  padding: 0 4px 0 8px;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+}
+.notes-myweek-drag-handle:active {
+  cursor: grabbing;
+}
+.notes-myweek-draggable:active {
+  cursor: grabbing;
+}
+body.notes-myweek-drag-active {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: grabbing;
+  touch-action: none;
+}
+body.notes-myweek-drag-active .notes-pane.notes-pane-planning .notes-pane-body,
+body.notes-myweek-drag-active .notes-pane-body.notes-myweek-drag-scroll-lock {
+  overflow: hidden !important;
+  touch-action: none;
+}
+.notes-myweek-source-dim {
+  opacity: 0.35;
+}
+.notes-myweek-drag-ghost {
+  position: fixed;
+  z-index: 10050;
+  pointer-events: none;
+  margin: 0;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--fg) 18%, transparent);
+  transform: scale(1.02) rotate(-0.4deg);
+  opacity: 0.95;
+}
+.notes-myweek-day-drop-target {
+  border-color: color-mix(in srgb, var(--accent-warm) 65%, var(--border)) !important;
+  background: color-mix(in srgb, var(--accent-warm) 8%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-warm) 25%, transparent);
+}
+.notes-myweek-day-drop-target .notes-myweek-day-head {
+  color: var(--accent-warm);
+}
+
+@media (max-width: 768px) {
+  /* Planning views: force the sheet body to be the one vertical scroller. */
+  body.notes-view .notes-pane.notes-pane-planning .notes-pane-body,
+  body.notes-view .notes-pane.notes-pane-planning .notes-pane-body.notes-planning-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto !important;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    overscroll-behavior-y: contain;
+  }
+  body.notes-view .notes-pane.notes-pane-planning .notes-plan-wrap,
+  body.notes-view .notes-pane.notes-pane-planning .notes-myweek-wrap,
+  body.notes-view .notes-pane.notes-pane-planning .notes-myweek-days {
+    overflow: visible;
+    touch-action: pan-y;
+  }
+  /* Let the pane body own vertical scroll on phones — per-day inner
+     scrollers trap touch gestures and block reaching later days. */
+  .notes-myweek-day .notes-plan-list {
+    max-height: none;
+    overflow-y: visible;
+    overscroll-behavior: auto;
+  }
+  .notes-myweek-day {
+    overflow: visible;
+  }
+  /* Scroll on row text; drag only from grip handle on the right. */
+  .notes-myweek-draggable {
+    touch-action: pan-y;
+  }
+  .notes-myweek-drag-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    touch-action: none;
+  }
+  /* Tools chevron (overflow menu collapse) — larger touch target on phones. */
+  .overflow-plus-btn {
+    min-width: 44px;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+  .hamburger-btn {
+    top: calc(10px + env(safe-area-inset-top, 0px));
+  }
+}
+
+.notes-myday-wrap {
+  width: 100%;
+  min-width: 0;
+}
+.notes-plan-section .notes-plan-list {
+  width: 100%;
+}
+
+/* legacy today-view aliases kept for goal-today chip */
+.notes-today-wrap { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 12px; }
+.notes-today-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-warm);
+  padding: 6px 10px 4px;
+}
+.notes-today-list { display: flex; flex-direction: column; gap: 6px; }
+.notes-today-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--panel, var(--bg));
+  border: 1px solid var(--border);
+  border-left: 3px solid color-mix(in srgb, var(--accent-warm) 70%, transparent);
+  border-radius: 8px;
+}
+.notes-today-title { font-size: 13px; font-weight: 600; cursor: pointer; }
+.notes-today-step { font-size: 12px; opacity: 0.85; }
+
 .notes-empty {
   text-align: center;
   padding: 32px 16px;

@@ -10,6 +10,7 @@
 // the calendar's entry module.
 
 import uiModule from '../ui.js';
+import { fmtTime24 } from './utils.js';
 
 const API_BASE = window.location.origin;
 
@@ -26,7 +27,7 @@ function _formatReminderBody(note) {
     if (!isNaN(start.getTime())) {
       const now = new Date();
       const mins = Math.round((start - now) / 60000);
-      const when = start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const when = fmtTime24(start);
       let when2 = '';
       const sameDay = start.toDateString() === now.toDateString();
       if (!sameDay) when2 = ' ' + start.toLocaleDateString([], { month: 'short', day: 'numeric' });

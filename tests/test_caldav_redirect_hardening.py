@@ -17,11 +17,12 @@ import pytest
 from src import caldav_sync, caldav_writeback
 
 
-def test_build_dav_client_disables_redirects():
-    """The hardened client must carry a redirect-disabled session."""
+def test_build_dav_client_limits_redirects_safely():
+    """Redirects are allowed only through the SSRF-checked session hook."""
     pytest.importorskip("caldav")
     client = caldav_sync._build_dav_client("https://calendar.example.com/dav", "u", "p")
-    assert client.session.max_redirects == 0
+    assert client.session.max_redirects == caldav_sync._CALDAV_MAX_REDIRECTS
+    assert callable(client.session.get_redirect_target)
 
 
 def test_dav_client_does_not_follow_redirect_to_internal_host():
@@ -97,7 +98,7 @@ def test_sync_and_writeback_construct_clients_through_the_helper():
 
     # In caldav_sync the only raw construction lives inside the helper itself.
     assert sync_text.count("caldav.DAVClient(") == 1
-    assert "max_redirects = 0" in sync_text
+    assert "_patch_session_for_safe_caldav_redirects" in sync_text
     assert "_build_dav_client(" in sync_text
 
     # Write-back must not construct its own raw client; it reuses the helper.

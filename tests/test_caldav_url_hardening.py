@@ -174,4 +174,6 @@ def test_calendar_routes_use_hardened_caldav_client_and_secret_storage():
     assert "encrypt(body[\"password\"])" in text
     assert "pw = decrypt(pw)" in text
     assert "follow_redirects=False, trust_env=False" in text
-    assert "Redirects are not followed for CalDAV safety" in text
+    # Redirects are followed manually, but every hop is re-validated through
+    # resolve_caldav_redirect (SSRF-safe) rather than trusting httpx to follow.
+    assert "resolve_caldav_redirect(" in text

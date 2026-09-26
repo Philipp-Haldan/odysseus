@@ -929,17 +929,9 @@ def _apply_local_cache_affinity(payload: Dict, url: str, session_id: Optional[st
     payload.setdefault("cache_prompt", True)
 
 
-def _is_local_minimax_mlx_request(url: str, model: str) -> bool:
-    """Local MLX MiniMax-family endpoints need conservative sampling defaults.
-
-    The OpenAI-compatible MLX server accepts repetition/frequency penalties.
-    Some large quantized MiniMax/MoE ports otherwise fall into visible reasoning
-    loops ("Also be...", "No.", etc.) even for trivial prompts.
-    """
+def _is_local_model_request(url: str, model: str) -> bool:
+    """True when ``model`` is answered by a local / self-hosted endpoint."""
     if not model:
-        return False
-    m = model.lower()
-    if "minimax" not in m and "mini-max" not in m:
         return False
     try:
         from src.model_context import is_local_endpoint
@@ -948,9 +940,83 @@ def _is_local_minimax_mlx_request(url: str, model: str) -> bool:
         return False
 
 
-def _apply_local_generation_stability(payload: Dict, url: str, model: str) -> None:
-    if not _is_local_minimax_mlx_request(url, model):
+def _is_local_minimax_mlx_request(url: str, model: str) -> bool:
+    """Local MLX MiniMax-family endpoints need conservative sampling defaults.
+
+    The OpenAI-compatible MLX server accepts repetition/frequency penalties.
+    Some large quantized MiniMax/MoE ports otherwise fall into visible reasoning
+    loops ("Also be...", "No.", etc.) even for trivial prompts.
+
+    Kept as its own predicate: MiniMax is the one family that also needs the
+    ``*_context_size`` knobs and the hard 2048 cap. The generic local profile
+    below is deliberately milder.
+    """
+    if not model:
+        return False
+    m = model.lower()
+    if "minimax" not in m and "mini-max" not in m:
+        return False
+    return _is_local_model_request(url, model)
+
+
+# --- Sampling profiles for locally served models -------------------------
+#
+# The chat default is DEFAULT_TEMPERATURE = 1.0 (src/constants.py) and the
+# "custom" preset leaves it there with max_tokens 0. On a self-hosted
+# endpoint that means temperature 1.0, no repetition penalty and no reply
+# cap -- which is how qwen3:30b-a3b once wrote the same letter ~15 times
+# inside a single <think> block, spent 20k output tokens over 239s, and then
+# answered that the *user* had repeated themselves.
+#
+# Each profile is the family's documented sampling recipe applied as a
+# ceiling: a preset asking for something calmer keeps its value, a preset
+# asking for something hotter than the family tolerates gets clamped.
+# Local endpoints only -- cloud providers reject unknown top-level fields.
+
+# Reply cap for local models that were sent no limit at all. An explicit
+# max_tokens is left alone (deep research asks for 16384 on purpose); this
+# only bounds the "unbounded" case so a looping model stops by itself.
+_LOCAL_STABILITY_MAX_TOKENS = 8192
+
+_QWEN_LOCAL_PROFILE = {
+    # Qwen's own recommendation for thinking mode: temp 0.6 / top_p 0.95 /
+    # top_k 20. presence_penalty stays mild -- Qwen suggests up to 1.5
+    # against endless repetition but warns that high values push the model
+    # into language mixing, which is the last thing a German chat needs.
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "presence_penalty": 0.5,
+}
+
+_GENERIC_LOCAL_PROFILE = {
+    # Nothing model-specific to lean on, so only the loop guard: a mild
+    # temperature ceiling plus nucleus sampling. No penalties -- we don't
+    # know an unknown local model well enough to trade quality for them.
+    "temperature": 0.8,
+    "top_p": 0.95,
+}
+
+
+def _local_stability_profile(model: str) -> Dict:
+    """Pick the sampling profile for a locally served model family."""
+    m = (model or "").lower()
+    if any(p in m for p in ("qwen3", "qwen-3", "qwq")):
+        return _QWEN_LOCAL_PROFILE
+    return _GENERIC_LOCAL_PROFILE
+
+
+def _clamp_temperature(params: Dict, ceiling: float) -> None:
+    """Lower an existing temperature to ``ceiling``; leave a calmer one alone."""
+    if "temperature" not in params:
         return
+    try:
+        params["temperature"] = min(float(params["temperature"]), ceiling)
+    except (TypeError, ValueError):
+        params["temperature"] = ceiling
+
+
+def _apply_minimax_mlx_stability(payload: Dict) -> None:
     if "temperature" in payload:
         try:
             # MiniMax MLX quantized ports are very sensitive to chat/agent
@@ -973,6 +1039,43 @@ def _apply_local_generation_stability(payload: Dict, url: str, model: str) -> No
     # endpoints. Keep simple chats from running forever when the model loops.
     if not payload.get("max_tokens") and not payload.get("max_completion_tokens"):
         payload["max_tokens"] = 2048
+
+
+def _apply_local_generation_stability(payload: Dict, url: str, model: str) -> None:
+    """Clamp sampling of an OpenAI-compatible payload for local models, in place."""
+    if _is_local_minimax_mlx_request(url, model):
+        _apply_minimax_mlx_stability(payload)
+        return
+    if not _is_local_model_request(url, model):
+        return
+    profile = _local_stability_profile(model)
+    _clamp_temperature(payload, profile["temperature"])
+    for key, value in profile.items():
+        if key != "temperature":
+            payload.setdefault(key, value)
+    if not payload.get("max_tokens") and not payload.get("max_completion_tokens"):
+        key = "max_completion_tokens" if "max_completion_tokens" in payload else "max_tokens"
+        payload[key] = _LOCAL_STABILITY_MAX_TOKENS
+
+
+def _apply_ollama_local_stability(payload: Dict, url: str, model: str) -> None:
+    """Same clamp as above, mapped onto Ollama's native /api/chat shape.
+
+    Native Ollama nests sampling under ``options`` and calls the reply cap
+    ``num_predict``, so the OpenAI-shaped helper can't be reused as is.
+    ollama.com's hosted API is served by this builder too -- hence the local
+    check before touching anything.
+    """
+    if not _is_local_model_request(url, model):
+        return
+    profile = _local_stability_profile(model)
+    options = payload.setdefault("options", {})
+    _clamp_temperature(options, profile["temperature"])
+    for key, value in profile.items():
+        if key != "temperature":
+            options.setdefault(key, value)
+    if not options.get("num_predict"):
+        options["num_predict"] = _LOCAL_STABILITY_MAX_TOKENS
 
 
 def _provider_headers(provider: str, headers: Optional[Dict] = None) -> Dict[str, str]:
@@ -1241,6 +1344,26 @@ def _supports_thinking(model: str) -> bool:
         return False
     m = model.lower()
     return any(p in m for p in _THINKING_MODEL_PATTERNS)
+
+def _suppress_ollama_thinking(payload: dict, url: str, model: str) -> None:
+    """Turn the reasoning block off for thinking models on Ollama's /v1 route.
+
+    Ollama's OpenAI-compatible endpoint silently drops the native ``think``
+    field (ollama/ollama#15029); the switch it actually honours there is
+    ``reasoning_effort``. Sending only ``think`` therefore left qwen3 reasoning
+    on every call. Measured on qwen3.5:9b for one extraction call:
+
+        think=False alone        2457 generated tokens, 13.9s
+        reasoning_effort="none"    88 generated tokens,  3.1s
+
+    Both fields are set so the native /api/chat route keeps working unchanged
+    if a caller ever points at it.
+    """
+    if not (_is_ollama_openai_compat_url(url) and _supports_thinking(model)):
+        return
+    payload["think"] = False
+    payload["reasoning_effort"] = "none"
+
 
 def _normalize_mistral_content(content):
     """Mistral returns content as a structured array when reasoning is on:
@@ -1807,6 +1930,7 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
             model, messages_copy, temperature, max_tokens,
             stream=False, num_ctx=get_context_length(url, model),
         )
+        _apply_ollama_local_stability(payload, target_url, model)
     else:
         target_url = _normalize_openai_chat_url(url)
         if provider == "copilot":
@@ -2014,6 +2138,7 @@ async def llm_call_async(
             model, messages_copy, temperature, max_tokens,
             stream=False, num_ctx=get_context_length(url, model),
         )
+        _apply_ollama_local_stability(payload, target_url, model)
     else:
         target_url = _normalize_openai_chat_url(url)
         h = _provider_headers(provider, headers)
@@ -2031,8 +2156,7 @@ async def llm_call_async(
             tok_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
             payload[tok_key] = max_tokens
         # Suppress thinking for qwen3/gemma4 on Ollama /v1 — same as stream_llm.
-        if _is_ollama_openai_compat_url(url) and _supports_thinking(model):
-            payload["think"] = False
+        _suppress_ollama_thinking(payload, url, model)
         if provider == "mistral" and _supports_thinking(model):
             payload["reasoning_effort"] = _MISTRAL_REASONING_EFFORT
         _apply_local_cache_affinity(payload, url, session_id)
@@ -2169,6 +2293,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
             model, messages_copy, temperature, max_tokens,
             stream=True, tools=tools, num_ctx=get_context_length(url, model),
         )
+        _apply_ollama_local_stability(payload, target_url, model)
     elif provider == "chatgpt-subscription":
         target_url = _normalize_chatgpt_subscription_url(url)
         h = _provider_headers(provider, headers)
@@ -2200,9 +2325,8 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
             payload["reasoning_effort"] = _MISTRAL_REASONING_EFFORT
         # For Ollama's OpenAI-compat /v1 endpoint with thinking models (qwen3,
         # gemma4, etc.), suppress thinking so tool calls aren't swallowed inside
-        # <think> blocks. Ollama /v1 accepts "think": false as a top-level param.
-        if _is_ollama_openai_compat_url(url) and _supports_thinking(model):
-            payload["think"] = False
+        # <think> blocks.
+        _suppress_ollama_thinking(payload, url, model)
         _apply_local_cache_affinity(payload, url, session_id)
         _apply_local_generation_stability(payload, target_url, model)
         h = _provider_headers(provider, headers)

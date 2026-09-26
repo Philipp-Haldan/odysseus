@@ -1,0 +1,7 @@
+# Remote access overlay (ZeroTier): keep localhost for the PC, expose on ZeroTier IP for phone.
+# Set ZEROTIER_BIND in .env to your PC's ZeroTier address (find with: ipconfig).
+services:
+  odysseus:
+    ports:
+      - "127.0.0.1:${APP_PORT:-7000}:7000"
+      - "${ZEROTIER_BIND:?Set ZEROTIER_BIND in .env}:${APP_PORT:-7000}:7000"

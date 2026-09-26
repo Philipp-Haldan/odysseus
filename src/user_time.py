@@ -121,6 +121,17 @@ def current_datetime_prompt(now_utc: Optional[datetime] = None) -> str:
 
     local_now = now_user_local(utc_now)
     tomorrow = local_now + timedelta(days=1)
+    # Spell out the next two weeks. Small local models get weekday->date
+    # arithmetic wrong often enough to matter ("Monday" landing on today's
+    # date, "next weekend" off by a week), and every such slip becomes a
+    # calendar event on the wrong day. Resolving it here is deterministic and
+    # costs ~200 tokens.
+    upcoming = "\n".join(
+        f"- {(local_now + timedelta(days=i)).strftime('%A')} "
+        f"= {(local_now + timedelta(days=i)).strftime('%Y-%m-%d')}"
+        + ("  <- today" if i == 0 else "")
+        for i in range(15)
+    )
     return (
         "## Current date and time\n"
         f"Today is {_date_label(local_now)} ({local_now.strftime('%Y-%m-%d')}). "
@@ -128,6 +139,10 @@ def current_datetime_prompt(now_utc: Optional[datetime] = None) -> str:
         f"current UTC time is {utc_now.strftime('%H:%M')}.\n"
         f"Tomorrow is {_date_label(tomorrow)} ({tomorrow.strftime('%Y-%m-%d')}) "
         "in the user's local timezone.\n"
+        "Next 15 days, already resolved — read weekday names off this list "
+        "instead of counting, and note that a bare weekday means its FIRST "
+        "occurrence below:\n"
+        f"{upcoming}\n"
         "Use this for any 'today', 'tomorrow', 'tonight', 'this week', or other "
         "relative-date reasoning. Do not ask for an exact date just because the "
         "user used a relative date.\n"

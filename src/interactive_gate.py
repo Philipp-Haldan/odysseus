@@ -65,6 +65,11 @@ _PASSIVE_EXACT_PATHS = {
     "/api/tasks/notifications",
     "/api/research/active",
     "/api/email/urgency-state",
+    # Same 60s idle poll as urgency-state above — an open-but-unused tab hits
+    # both. Leaving it tracked meant every minute counted as foreground work
+    # and cancelled running background jobs, so a scheduled research task
+    # (up to 600s) could never finish while any tab was open.
+    "/api/email/unread-state",
 }
 
 _PASSIVE_PREFIXES = (

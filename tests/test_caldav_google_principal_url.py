@@ -83,9 +83,15 @@ class _FakePrincipal:
 class _FakeClient:
     def __init__(self, url=None, username=None, password=None):
         self.url = url
-        # Mirror the real DAVClient: _build_dav_client sets
-        # session.max_redirects = 0 right after construction.
-        self.session = types.SimpleNamespace(max_redirects=30)
+        # Mirror the requests.Session the real DAVClient exposes:
+        # _build_dav_client patches session.get_redirect_target to
+        # re-validate every redirect hop (SSRF-safe) and caps
+        # session.max_redirects. The lambda stands in for requests'
+        # own get_redirect_target; this test exercises no redirects.
+        self.session = types.SimpleNamespace(
+            max_redirects=30,
+            get_redirect_target=lambda resp: None,
+        )
 
     def principal(self):
         return _FakePrincipal()

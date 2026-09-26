@@ -16,6 +16,7 @@ import {
   _isCalBgImage, _calBgImageUrl, _calBgCss, _cssUrlEscape,
   _calReadableTextColor,
   _ds, _addDays, _shiftDT, _tzOffset, _localDateOf,
+  fmtTime24, fmtDateTime24,
 } from './calendar/utils.js';
 
 const API_BASE = window.location.origin;
@@ -579,7 +580,7 @@ async function _createEventReminder(ev, dueDate) {
   const iso = new Date(dueDate).toISOString();
   const startFmt = ev.all_day
     ? new Date(ev.dtstart).toLocaleDateString([], { weekday:'short', month:'short', day:'numeric' })
-    : new Date(ev.dtstart).toLocaleString([], { weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+    : fmtDateTime24(new Date(ev.dtstart), { weekday:'short', month:'short', day:'numeric' });
   const summary = ev.summary || '(no title)';
   const loc = ev.location ? ` @ ${ev.location}` : '';
   const text = `${summary}${loc} — ${startFmt}`;
@@ -602,7 +603,7 @@ async function _createEventReminder(ev, dueDate) {
       body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error('Failed');
-    const fmt = dueDate.toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+    const fmt = fmtDateTime24(dueDate, { month:'short', day:'numeric' });
     if (uiModule.showToast) uiModule.showToast(`Reminder set for ${fmt}`);
     try { window.notesModule?.refreshDueBadge?.({ force: true }); } catch {}
     if ('Notification' in window && Notification.permission === 'default') {
@@ -1216,11 +1217,7 @@ function _wkMinToHHMM(mins) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 function _wkFormatHourLabel(h) {
-  const use12 = (new Date()).toLocaleString().toLowerCase().match(/am|pm/);
-  if (!use12) return `${String(h).padStart(2, '0')}:00`;
-  const ampm = h < 12 ? 'AM' : 'PM';
-  const hh = ((h + 11) % 12) + 1;
-  return `${hh} ${ampm}`;
+  return `${String(h).padStart(2, '0')}:00`;
 }
 function _wkEventTopHeight(ev, dayStr) {
   // Convert event start/end (local) into top/height in px relative to the
@@ -3365,27 +3362,18 @@ function _clockFace(hhmm) {
     return '<span class="cal-hero-clock-hh" data-seg="hh">—</span><span class="cal-hero-sep"> : </span><span class="cal-hero-clock-mm" data-seg="mm">—</span>';
   }
   const [h, m] = hhmm.split(':');
-  const use12 = (new Date()).toLocaleString().toLowerCase().match(/am|pm/);
-  let hh = parseInt(h, 10);
-  if (use12) { hh = ((hh + 11) % 12) + 1; }
-  const hhStr = String(hh).padStart(2, '0');
+  const hhStr = String(parseInt(h, 10)).padStart(2, '0');
   return `<span class="cal-hero-clock-hh" data-seg="hh">${hhStr}</span><span class="cal-hero-sep"> : </span><span class="cal-hero-clock-mm" data-seg="mm">${m}</span>`;
 }
 function _clockAmpm(hhmm) {
-  if (!hhmm) return '';
-  const use12 = (new Date()).toLocaleString().toLowerCase().match(/am|pm/);
-  if (!use12) return '';
-  const h = parseInt(hhmm.split(':')[0], 10);
-  return h < 12 ? 'AM' : 'PM';
+  return '';
 }
 function _clockDate(ds) {
   if (!ds) return '';
   return new Date(ds + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
 function _nowClock() {
-  // Live wall-clock string for the "Today is …" header. Locale-aware so
-  // 24-h users don't see AM/PM.
-  return new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return fmtTime24(new Date());
 }
 function _fmtTime(s) {
   if (!s || s.length < 16) return '';
