@@ -631,9 +631,14 @@ function _isDailyTodoNote(note) {
 }
 
 function _isOpenTodoForMyDay(note) {
-  if (!_isDailyTodoNote(note) || _isNoteFullyDone(note)) return false;
-  if (!note.due_date) return true;
-  return _isDueTodayOrOverdue(note.due_date);
+  if (_isDailyTodoNote(note)) {
+    if (_isNoteFullyDone(note)) return false;
+    if (!note.due_date) return true;
+    return _isDueTodayOrOverdue(note.due_date);
+  }
+  // Any other dated item (e.g. a plain note with a reminder) must show here
+  // whenever "Meine Woche" lists it under today — same rule as that view.
+  return _isDatedPlanItem(note) && _noteMatchesWeekDay(note, _myDayTodayStr());
 }
 
 function _collectMyDayTodoRows() {
