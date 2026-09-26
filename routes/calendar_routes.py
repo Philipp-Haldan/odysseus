@@ -253,6 +253,26 @@ from src.user_time import (
 )
 
 
+def _normalize_german_relative(lower: str) -> str:
+    """Rewrite German relative phrasings into the English forms the parsers know.
+
+    A de-DE agent emits due dates like "heute 19:00" or "morgen um 9 Uhr".
+    Both parsers only matched English keywords, so these raised, and the
+    notes tool stored the literal string — a due date that never fired and
+    that neither "Mein Tag" nor "Meine Woche" could place on a day.
+    """
+    import re as _re
+    s = lower.strip()
+    # "heute morgen/abend …" is still today; "morgen früh" is tomorrow.
+    s = _re.sub(r'^heute\s+(?:morgen|früh|frueh|vormittag|mittag|nachmittag|abend|nacht)\b', 'heute', s)
+    s = _re.sub(r'^morgen\s+(?:früh|frueh|vormittag|mittag|nachmittag|abend|nacht)\b', 'morgen', s)
+    s = _re.sub(r'\b(?:heute|morgen|gestern)\b',
+                lambda m: {"heute": "today", "morgen": "tomorrow", "gestern": "yesterday"}[m.group(0)], s)
+    s = _re.sub(r'\bum\b', 'at', s)
+    s = _re.sub(r'\s*\buhr\b', '', s)
+    return _re.sub(r'\s+', ' ', s).strip()
+
+
 def parse_due_for_user(s: str) -> str:
     """Parse a due-date string emitted by the LLM / agent in the USER's tz.
 
@@ -300,7 +320,7 @@ def parse_due_for_user(s: str) -> str:
     # we re-implement the small natural-language phrases here against user_now
     # so the result is naturally in the user's tz.
     import re as _re
-    lower = s.lower().strip()
+    lower = _normalize_german_relative(s.lower())
 
     def _parse_time(t):
         t = _re.sub(r'\b([ap])\s*\.?\s*m\.?\b', r'\1m', t.strip(), flags=_re.IGNORECASE)
@@ -420,7 +440,7 @@ def _parse_dt(s: str) -> datetime:
 
     now = datetime.now()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    lower = s.lower().strip()
+    lower = _normalize_german_relative(s.lower())
 
     def _parse_time(t: str):
         """Return (hour, minute) from '1pm', '1:30 PM', '13:00', etc., or None."""
